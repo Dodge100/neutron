@@ -2,7 +2,7 @@
 //  neutronApp.swift
 //  neutron
 //
-//  Created by Varun G on 10/31/25.
+//  Created by Dodge1 on 10/31/25.
 //
 
 import SwiftUI
@@ -12,6 +12,10 @@ struct neutronApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+        }
+        
+        Settings {
+            SettingsView()
         }
     }
 }
