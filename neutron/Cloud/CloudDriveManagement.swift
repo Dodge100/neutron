@@ -25,7 +25,7 @@ protocol CloudProviderService: ObservableObject {
     var account: CloudDriveAccount { get }
     var isAuthenticating: Bool { get }
     var authError: String? { get }
-    
+
     func authenticate() async throws
     func listFiles(path: String) async throws -> [CloudFileItem]
     func downloadFile(_ file: CloudFileItem, to localURL: URL) async throws
@@ -58,7 +58,7 @@ struct CloudFileItem: Identifiable, Equatable, Hashable {
     let modified: Date
     let mimeType: String?
     let etag: String?
-    
+
     var icon: String {
         if isDirectory {
             return "folder.fill"
@@ -72,7 +72,7 @@ struct CloudFileItem: Identifiable, Equatable, Hashable {
             return "music.note"
         case let type where type?.contains("pdf") == true:
             return "doc.richtext"
-        case let type where type?.contains("zip") == true, let type where type?.contains("archive") == true:
+        case let type where type?.contains("zip") == true || type?.contains("archive") == true:
             return "doc.zipper"
         default:
             return "doc"
@@ -88,7 +88,7 @@ enum CloudServiceError: LocalizedError {
     case quotaExceeded
     case invalidConfiguration(String)
     case unknown(String)
-    
+
     var errorDescription: String? {
         switch self {
         case .notAuthenticated:
@@ -114,45 +114,45 @@ class GoogleDriveService: CloudProviderService {
     let account: CloudDriveAccount
     @Published var isAuthenticating: Bool = false
     @Published var authError: String? = nil
-    
+
     private var accessToken: String?
-    
+
     init(account: CloudDriveAccount) {
         self.account = account
     }
-    
+
     func authenticate() async throws {
         isAuthenticating = true
         defer { isAuthenticating = false }
-        
+
         throw CloudServiceError.notAuthenticated
     }
-    
+
     func listFiles(path: String) async throws -> [CloudFileItem] {
         guard accessToken != nil else { throw CloudServiceError.notAuthenticated }
         return []
     }
-    
+
     func downloadFile(_ file: CloudFileItem, to localURL: URL) async throws {
         guard accessToken != nil else { throw CloudServiceError.notAuthenticated }
         throw CloudServiceError.notAuthenticated
     }
-    
+
     func uploadFile(from localURL: URL, to path: String) async throws -> CloudFileItem {
         guard accessToken != nil else { throw CloudServiceError.notAuthenticated }
         throw CloudServiceError.notAuthenticated
     }
-    
+
     func deleteFile(_ file: CloudFileItem) async throws {
         guard accessToken != nil else { throw CloudServiceError.notAuthenticated }
         throw CloudServiceError.notAuthenticated
     }
-    
+
     func createFolder(named name: String, at path: String) async throws -> CloudFileItem {
         guard accessToken != nil else { throw CloudServiceError.notAuthenticated }
         throw CloudServiceError.notAuthenticated
     }
-    
+
     func refreshStorageInfo() async throws {
         guard accessToken != nil else { throw CloudServiceError.notAuthenticated }
     }
@@ -163,47 +163,47 @@ class S3Service: CloudProviderService {
     let account: CloudDriveAccount
     @Published var isAuthenticating: Bool = false
     @Published var authError: String? = nil
-    
+
     private var accessKeyId: String?
     private var secretAccessKey: String?
     private var sessionToken: String?
-    
+
     init(account: CloudDriveAccount) {
         self.account = account
     }
-    
+
     func authenticate() async throws {
         isAuthenticating = true
         defer { isAuthenticating = false }
-        
+
         throw CloudServiceError.notAuthenticated
     }
-    
+
     func listFiles(path: String) async throws -> [CloudFileItem] {
         guard accessKeyId != nil else { throw CloudServiceError.notAuthenticated }
         return []
     }
-    
+
     func downloadFile(_ file: CloudFileItem, to localURL: URL) async throws {
         guard accessKeyId != nil else { throw CloudServiceError.notAuthenticated }
         throw CloudServiceError.notAuthenticated
     }
-    
+
     func uploadFile(from localURL: URL, to path: String) async throws -> CloudFileItem {
         guard accessKeyId != nil else { throw CloudServiceError.notAuthenticated }
         throw CloudServiceError.notAuthenticated
     }
-    
+
     func deleteFile(_ file: CloudFileItem) async throws {
         guard accessKeyId != nil else { throw CloudServiceError.notAuthenticated }
         throw CloudServiceError.notAuthenticated
     }
-    
+
     func createFolder(named name: String, at path: String) async throws -> CloudFileItem {
         guard accessKeyId != nil else { throw CloudServiceError.notAuthenticated }
         throw CloudServiceError.notAuthenticated
     }
-    
+
     func refreshStorageInfo() async throws {
         guard accessKeyId != nil else { throw CloudServiceError.notAuthenticated }
     }
@@ -217,18 +217,19 @@ struct CloudDriveAccount: Identifiable, Equatable, Codable, Hashable {
     var localRootPath: String?
     var oauthClientID: String?
     var oauthTenant: String?
+    var remoteEndpoint: String?
     var storageLimitBytes: Int64
     var usedBytes: Int64
     var isConnected: Bool
     var accentHex: String
-    
+
     var s3Configuration: S3Configuration?
-    
+
     struct S3Configuration: Equatable, Codable, Hashable {
         var bucketName: String
         var region: String
         var endpoint: String?
-        
+
         static let empty = S3Configuration(
             bucketName: "",
             region: "us-east-1",
@@ -244,6 +245,7 @@ struct CloudDriveAccount: Identifiable, Equatable, Codable, Hashable {
         localRootPath: String? = nil,
         oauthClientID: String? = nil,
         oauthTenant: String? = nil,
+        remoteEndpoint: String? = nil,
         storageLimitBytes: Int64 = 15 * 1_024 * 1_024 * 1_024,
         usedBytes: Int64 = 0,
         isConnected: Bool = true,
@@ -257,6 +259,7 @@ struct CloudDriveAccount: Identifiable, Equatable, Codable, Hashable {
         self.localRootPath = localRootPath
         self.oauthClientID = oauthClientID
         self.oauthTenant = oauthTenant
+        self.remoteEndpoint = remoteEndpoint
         self.storageLimitBytes = storageLimitBytes
         self.usedBytes = usedBytes
         self.isConnected = isConnected
@@ -278,16 +281,29 @@ struct CloudDriveAccount: Identifiable, Equatable, Codable, Hashable {
         return URL(fileURLWithPath: localRootPath)
     }
 
+    var remoteEndpointURL: URL? {
+        guard let remoteEndpoint,
+              !remoteEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return URL(string: remoteEndpoint)
+    }
+
     var supportsRemoteBrowsing: Bool {
-        provider != .iCloudDrive
+        switch provider {
+        case .iCloudDrive, .sftp, .ftp, .webDav, .smb, .afp, .nfs:
+            return false
+        case .googleDrive, .dropbox, .oneDrive, .box, .awsS3, .backblazeB2, .rackspaceCloudfiles:
+            return true
+        }
     }
 
     var hasRemoteConfiguration: Bool {
         switch provider {
         case .googleDrive, .dropbox, .oneDrive, .box:
             return oauthClientID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        case .awsS3:
+        case .awsS3, .backblazeB2, .rackspaceCloudfiles:
             return s3Configuration != nil
+        case .sftp, .ftp, .webDav, .smb, .afp, .nfs:
+            return remoteEndpointURL != nil
         case .iCloudDrive:
             return false
         }
@@ -319,6 +335,14 @@ enum CloudProvider: String, Codable, CaseIterable, Identifiable, Hashable {
     case box = "Box"
     case iCloudDrive = "iCloud Drive"
     case awsS3 = "Amazon S3"
+    case backblazeB2 = "Backblaze B2"
+    case rackspaceCloudfiles = "Rackspace Cloudfiles"
+    case sftp = "SFTP"
+    case ftp = "FTP"
+    case webDav = "WebDAV"
+    case smb = "SMB"
+    case afp = "AFP"
+    case nfs = "NFS"
 
     var id: String { rawValue }
 
@@ -336,9 +360,25 @@ enum CloudProvider: String, Codable, CaseIterable, Identifiable, Hashable {
             return "icloud"
         case .awsS3:
             return "externaldrive.connected.to.line.below"
+        case .backblazeB2:
+            return "shippingbox.circle"
+        case .rackspaceCloudfiles:
+            return "shippingbox.circle.fill"
+        case .sftp:
+            return "terminal"
+        case .ftp:
+            return "antenna.radiowaves.left.and.right"
+        case .webDav:
+            return "globe"
+        case .smb:
+            return "network"
+        case .afp:
+            return "server.rack"
+        case .nfs:
+            return "externaldrive.connected.to.line.below"
         }
     }
-    
+
     var description: String {
         switch self {
         case .googleDrive:
@@ -353,6 +393,22 @@ enum CloudProvider: String, Codable, CaseIterable, Identifiable, Hashable {
             return "Apple iCloud Drive"
         case .awsS3:
             return "Amazon S3 bucket via signed API requests"
+        case .backblazeB2:
+            return "Backblaze B2 via S3-compatible endpoint"
+        case .rackspaceCloudfiles:
+            return "Rackspace Cloudfiles via endpoint-style credentials"
+        case .sftp:
+            return "Secure File Transfer Protocol remote endpoint"
+        case .ftp:
+            return "File Transfer Protocol remote endpoint"
+        case .webDav:
+            return "WebDAV endpoint"
+        case .smb:
+            return "SMB network share"
+        case .afp:
+            return "AFP network share"
+        case .nfs:
+            return "NFS network share"
         }
     }
 
@@ -370,6 +426,22 @@ enum CloudProvider: String, Codable, CaseIterable, Identifiable, Hashable {
             return "#4F8EF7"
         case .awsS3:
             return "#FF9900"
+        case .backblazeB2:
+            return "#FF6900"
+        case .rackspaceCloudfiles:
+            return "#CC0000"
+        case .sftp:
+            return "#0A84FF"
+        case .ftp:
+            return "#64D2FF"
+        case .webDav:
+            return "#30B0C7"
+        case .smb:
+            return "#34C759"
+        case .afp:
+            return "#8E8E93"
+        case .nfs:
+            return "#BF5AF2"
         }
     }
 }
@@ -390,9 +462,9 @@ enum S3Regions: String, CaseIterable, Identifiable {
     case apSouth1 = "ap-south-1"
     case saEast1 = "sa-east-1"
     case caCentral1 = "ca-central-1"
-    
+
     var id: String { rawValue }
-    
+
     var displayName: String {
         switch self {
         case .usEast1: return "US East (N. Virginia)"
@@ -516,6 +588,7 @@ final class CloudWorkspaceStore: ObservableObject {
         localRootURL: URL?,
         oauthClientID: String? = nil,
         oauthTenant: String? = nil,
+        remoteEndpoint: String? = nil,
         oauthClientSecret: String? = nil,
         s3Configuration: CloudDriveAccount.S3Configuration? = nil,
         s3Credentials: StoredS3Credential? = nil
@@ -526,6 +599,7 @@ final class CloudWorkspaceStore: ObservableObject {
             localRootURL: localRootURL,
             oauthClientID: oauthClientID,
             oauthTenant: oauthTenant,
+            remoteEndpoint: remoteEndpoint,
             s3Configuration: s3Configuration
         )
         model.accounts.append(account)
@@ -560,9 +634,9 @@ final class CloudWorkspaceStore: ObservableObject {
             service = RemoteOneDriveService(account: account, credentialStore: credentialStore)
         case .box:
             service = RemoteBoxService(account: account, credentialStore: credentialStore)
-        case .awsS3:
+        case .awsS3, .backblazeB2, .rackspaceCloudfiles:
             service = RemoteS3Service(account: account, credentialStore: credentialStore)
-        case .iCloudDrive:
+        case .iCloudDrive, .sftp, .ftp, .webDav, .smb, .afp, .nfs:
             service = nil
         }
 
@@ -574,13 +648,25 @@ final class CloudWorkspaceStore: ObservableObject {
     }
 
     func connectAccount(_ accountID: UUID) async throws {
-        guard let account = model.accounts.first(where: { $0.id == accountID }),
-              let service = service(for: account) else {
-            throw CloudServiceError.invalidConfiguration("This provider doesn't support remote authentication")
+        guard let account = model.accounts.first(where: { $0.id == accountID }) else {
+            throw CloudServiceError.fileNotFound("Missing cloud account")
         }
 
-        try await service.authenticate()
-        refreshAccountConnections()
+        switch account.provider {
+        case .sftp, .ftp, .webDav, .smb, .afp, .nfs:
+            guard let endpoint = account.remoteEndpointURL else {
+                throw CloudServiceError.invalidConfiguration("Provide endpoint URL first")
+            }
+            NSWorkspace.shared.open(endpoint)
+            refreshAccountConnections()
+
+        default:
+            guard let service = service(for: account) else {
+                throw CloudServiceError.invalidConfiguration("This provider doesn't support remote authentication")
+            }
+            try await service.authenticate()
+            refreshAccountConnections()
+        }
     }
 
     func signOutAccount(_ accountID: UUID) {
@@ -595,7 +681,7 @@ final class CloudWorkspaceStore: ObservableObject {
         switch account.provider {
         case .iCloudDrive:
             return account.localRootURL == nil ? "Local only" : "Local sync folder"
-        case .awsS3:
+        case .awsS3, .backblazeB2, .rackspaceCloudfiles:
             return credentialStore.loadS3Credential(for: account.id) == nil ? "Needs credentials" : "API connected"
         case .googleDrive, .dropbox, .oneDrive, .box:
             if credentialStore.loadOAuthCredential(for: account.id) != nil {
@@ -608,6 +694,11 @@ final class CloudWorkspaceStore: ObservableObject {
                 return "Local sync folder"
             }
             return "Needs OAuth setup"
+        case .sftp, .ftp, .webDav, .smb, .afp, .nfs:
+            if account.localRootURL != nil {
+                return "Mounted"
+            }
+            return account.remoteEndpointURL == nil ? "Needs endpoint" : "Ready to mount"
         }
     }
 
@@ -615,9 +706,9 @@ final class CloudWorkspaceStore: ObservableObject {
         switch account.provider {
         case .googleDrive, .dropbox, .oneDrive, .box:
             return credentialStore.loadOAuthCredential(for: account.id) != nil
-        case .awsS3:
+        case .awsS3, .backblazeB2, .rackspaceCloudfiles:
             return credentialStore.loadS3Credential(for: account.id) != nil
-        case .iCloudDrive:
+        case .sftp, .ftp, .webDav, .smb, .afp, .nfs, .iCloudDrive:
             return false
         }
     }
@@ -843,6 +934,7 @@ final class CloudWorkspaceStore: ObservableObject {
         localRootURL: URL?,
         oauthClientID: String? = nil,
         oauthTenant: String? = nil,
+        remoteEndpoint: String? = nil,
         s3Configuration: CloudDriveAccount.S3Configuration? = nil
     ) -> CloudDriveAccount {
         let resolvedDisplayName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -857,6 +949,7 @@ final class CloudWorkspaceStore: ObservableObject {
             localRootPath: localRootURL?.path,
             oauthClientID: oauthClientID,
             oauthTenant: oauthTenant,
+            remoteEndpoint: remoteEndpoint,
             storageLimitBytes: storageLimitBytes,
             isConnected: localRootURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? true,
             accentHex: provider.accentHex,
@@ -956,7 +1049,7 @@ struct CloudDriveManagementView: View {
         }
         .padding()
     }
-    
+
     private var addAccountSection: some View {
         GroupBox("Add Cloud Account") {
             VStack(alignment: .leading, spacing: 12) {
@@ -967,14 +1060,14 @@ struct CloudDriveManagementView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                
+
                 TextField("Display name", text: $newAccountName)
                     .textFieldStyle(.roundedBorder)
 
                 let suggestedRoots = store.suggestedRoots(for: newProviderType)
 
                 HStack(spacing: 8) {
-                    Button("Choose Sync Folder…") {
+                    Button("Choose Sync Folder...") {
                         showRootPicker = true
                     }
 
@@ -1009,11 +1102,11 @@ struct CloudDriveManagementView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                
+
                 if newProviderType == .awsS3 {
                     TextField("Bucket name", text: $newS3Bucket)
                         .textFieldStyle(.roundedBorder)
-                    
+
                     Picker("Region", selection: $newS3Region) {
                         ForEach(S3Regions.allCases, id: \.self) { region in
                             Text(region.rawValue).tag(region)
@@ -1029,7 +1122,7 @@ struct CloudDriveManagementView: View {
                     TextField("Session token (optional)", text: $newS3SessionToken)
                         .textFieldStyle(.roundedBorder)
                 }
-                
+
                 Button("Add \(newProviderType.rawValue) Account") {
                     addNewAccount()
                 }
@@ -1038,7 +1131,7 @@ struct CloudDriveManagementView: View {
             .padding(.vertical, 4)
         }
     }
-    
+
     private var canAddAccount: Bool {
         let nameValid = !newAccountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if newProviderType == .awsS3 {
@@ -1052,11 +1145,11 @@ struct CloudDriveManagementView: View {
         }
         return nameValid
     }
-    
+
     private func addNewAccount() {
         let trimmed = newAccountName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        
+
         var s3Config: CloudDriveAccount.S3Configuration? = nil
         if newProviderType == .awsS3 {
             let bucket = newS3Bucket.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1086,7 +1179,7 @@ struct CloudDriveManagementView: View {
             s3Configuration: s3Config,
             s3Credentials: s3Credentials
         )
-        
+
         newAccountName = ""
         newOAuthClientID = ""
         newOAuthClientSecret = ""
@@ -1204,7 +1297,7 @@ struct CloudAccountRowView: View {
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
-                
+
                 if account.provider == .awsS3, let config = account.s3Configuration {
                     HStack(spacing: 4) {
                         Text(config.bucketName)
@@ -1345,7 +1438,7 @@ struct CloudUnifiedSearchResultsView: View {
                 ContentUnavailableView(
                     "No Cloud Results",
                     systemImage: "magnifyingglass",
-                    description: Text("No cloud items matched “\(query)”.")
+                    description: Text("No cloud items matched "\(query)".")
                 )
             } else {
                 List(results) { result in

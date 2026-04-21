@@ -5,6 +5,12 @@ import Quartz
 import QuickLookThumbnailing
 import UniformTypeIdentifiers
 
+private extension Color {
+    static var neutronSelectionAccent: Color {
+        Color(nsColor: .controlAccentColor)
+    }
+}
+
 // MARK: - GitStatus
 
 enum GitFileStatus {
@@ -302,7 +308,11 @@ struct FileBrowserView: View {
                             iconSize: iconSize,
                             onOpen: handleOpen,
                             onSelect: handleSelect,
-                            contextMenu: contextMenuForFile
+                            contextMenu: contextMenuForFile,
+                            onDropToFolder: handleDroppedURLs(_:to:),
+                            onDropToCurrentDirectory: { urls in
+                                handleDroppedURLs(urls, to: currentPath)
+                            }
                         )
                     case .list:
                         FileListView(
@@ -319,7 +329,11 @@ struct FileBrowserView: View {
                             onOpen: handleOpen,
                             onSelect: handleSelect,
                             onRenameCommit: commitRename,
-                            contextMenu: contextMenuForFile
+                            contextMenu: contextMenuForFile,
+                            onDropToFolder: handleDroppedURLs(_:to:),
+                            onDropToCurrentDirectory: { urls in
+                                handleDroppedURLs(urls, to: currentPath)
+                            }
                         )
                     case .column:
                         ColumnView(
@@ -379,6 +393,9 @@ struct FileBrowserView: View {
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .dropDestination(for: URL.self) { urls, _ in
+            handleDroppedURLs(urls, to: currentPath)
+        }
         .onAppear {
             loadFiles()
             publishPreviewSelection()
@@ -448,6 +465,67 @@ struct FileBrowserView: View {
             currentPath = file.path
         } else {
             NSWorkspace.shared.open(file.path)
+        }
+    }
+
+    @discardableResult
+    private func handleDroppedURLs(_ urls: [URL], to destinationDirectory: URL) -> Bool {
+        let fileManager = FileManager.default
+        let destination = destinationDirectory.standardizedFileURL
+        var moved = false
+
+        for sourceURL in urls where sourceURL.isFileURL {
+            let source = sourceURL.standardizedFileURL
+            let parent = source.deletingLastPathComponent().standardizedFileURL
+
+            if source == destination || parent == destination {
+                continue
+            }
+
+            if source.hasDirectoryPath,
+               destination.path.hasPrefix(source.path + "/") {
+                continue
+            }
+
+            var candidate = destination.appendingPathComponent(source.lastPathComponent)
+            if fileManager.fileExists(atPath: candidate.path) {
+                candidate = uniqueDestinationURL(for: source, in: destination)
+            }
+
+            do {
+                try fileManager.moveItem(at: source, to: candidate)
+                moved = true
+            } catch {
+                fileOps.lastError = "Failed to move \(source.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+
+        if moved {
+            loadFiles()
+        }
+
+        return moved
+    }
+
+    private func uniqueDestinationURL(for source: URL, in directory: URL) -> URL {
+        let ext = source.pathExtension
+        let base = source.deletingPathExtension().lastPathComponent
+
+        var counter = 2
+        while true {
+            let candidateName: String
+            if ext.isEmpty {
+                candidateName = "\(base) \(counter)"
+            } else {
+                candidateName = "\(base) \(counter).\(ext)"
+            }
+
+            let candidate = directory.appendingPathComponent(candidateName)
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+
+            counter += 1
         }
     }
 
@@ -1140,6 +1218,8 @@ struct FileListView: View {
     var onSelect: (FileItem, Bool) -> Void
     var onRenameCommit: () -> Void
     var contextMenu: (FileItem) -> AnyView
+    var onDropToFolder: ([URL], URL) -> Bool
+    var onDropToCurrentDirectory: ([URL]) -> Bool
 
     @AppStorage("listNameColumnWidth") private var nameColumnWidth: Double = 200
     @AppStorage("listSizeColumnWidth") private var sizeColumnWidth: Double = 84
@@ -1160,7 +1240,9 @@ struct FileListView: View {
         onOpen: @escaping (FileItem) -> Void,
         onSelect: @escaping (FileItem, Bool) -> Void,
         onRenameCommit: @escaping () -> Void,
-        contextMenu: @escaping (FileItem) -> some View
+        contextMenu: @escaping (FileItem) -> some View,
+        onDropToFolder: @escaping ([URL], URL) -> Bool,
+        onDropToCurrentDirectory: @escaping ([URL]) -> Bool
     ) {
         self.files = files
         self._selectedFiles = selectedFiles
@@ -1176,101 +1258,151 @@ struct FileListView: View {
         self.onSelect = onSelect
         self.onRenameCommit = onRenameCommit
         self.contextMenu = { file in AnyView(contextMenu(file)) }
+        self.onDropToFolder = onDropToFolder
+        self.onDropToCurrentDirectory = onDropToCurrentDirectory
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                ResizableSortableHeader(
-                    title: "Name",
-                    column: .name,
-                    currentColumn: $sortColumn,
-                    ascending: $sortAscending,
-                    width: $nameColumnWidth,
-                    minWidth: 140,
-                    alignment: .leading,
-                    isFlexible: true
-                )
+        GeometryReader { geometry in
+            let columns = resolvedColumns(for: geometry.size.width)
 
-                if showSizeColumn {
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
                     ResizableSortableHeader(
-                        title: "Size",
-                        column: .size,
+                        title: "Name",
+                        column: .name,
                         currentColumn: $sortColumn,
                         ascending: $sortAscending,
-                        width: $sizeColumnWidth,
-                        minWidth: 68,
-                        alignment: .trailing
+                        width: $nameColumnWidth,
+                        minWidth: Double(columns.nameMinWidth),
+                        alignment: .leading,
+                        isFlexible: true
                     )
-                }
 
-                if showDateColumn {
-                    ResizableSortableHeader(
-                        title: "Date Modified",
-                        column: .modified,
-                        currentColumn: $sortColumn,
-                        ascending: $sortAscending,
-                        width: $dateColumnWidth,
-                        minWidth: 110,
-                        alignment: .trailing
-                    )
-                }
-
-                if showKindColumn {
-                    ResizableSortableHeader(
-                        title: "Kind",
-                        column: .kind,
-                        currentColumn: $sortColumn,
-                        ascending: $sortAscending,
-                        width: $kindColumnWidth,
-                        minWidth: 90,
-                        alignment: .trailing
-                    )
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(Color(nsColor: .controlBackgroundColor))
-
-            Divider()
-
-            List(selection: $selectedFiles) {
-                ForEach(Array(files.enumerated()), id: \.element.id) { index, file in
-                    FileListRow(
-                        file: file,
-                        isSelected: selectedFiles.contains(file.path),
-                        isRenaming: renamingFile == file.path,
-                        renameText: $renameText,
-                        onRenameCommit: onRenameCommit,
-                        gitStatus: gitStatuses[file.path.path],
-                        showSizeColumn: showSizeColumn,
-                        showDateColumn: showDateColumn,
-                        showKindColumn: showKindColumn,
-                        nameColumnWidth: CGFloat(nameColumnWidth),
-                        sizeColumnWidth: CGFloat(sizeColumnWidth),
-                        dateColumnWidth: CGFloat(dateColumnWidth),
-                        kindColumnWidth: CGFloat(kindColumnWidth)
-                    )
-                    .listRowBackground(rowBackground(for: file, index: index))
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets())
-                    .tag(file.path)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        onSelect(file, NSEvent.modifierFlags.contains(.command))
+                    if columns.showSize {
+                        ResizableSortableHeader(
+                            title: "Size",
+                            column: .size,
+                            currentColumn: $sortColumn,
+                            ascending: $sortAscending,
+                            width: $sizeColumnWidth,
+                            minWidth: 68,
+                            alignment: .trailing
+                        )
                     }
-                    .contextMenu { contextMenu(file) }
-                    .draggable(file.path)
+
+                    if columns.showDate {
+                        ResizableSortableHeader(
+                            title: "Date Modified",
+                            column: .modified,
+                            currentColumn: $sortColumn,
+                            ascending: $sortAscending,
+                            width: $dateColumnWidth,
+                            minWidth: 110,
+                            alignment: .trailing
+                        )
+                    }
+
+                    if columns.showKind {
+                        ResizableSortableHeader(
+                            title: "Kind",
+                            column: .kind,
+                            currentColumn: $sortColumn,
+                            ascending: $sortAscending,
+                            width: $kindColumnWidth,
+                            minWidth: 90,
+                            alignment: .trailing
+                        )
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(Color(nsColor: .controlBackgroundColor))
+
+                Divider()
+
+                List(selection: $selectedFiles) {
+                    ForEach(Array(files.enumerated()), id: \.element.id) { index, file in
+                        FileListRow(
+                            file: file,
+                            isSelected: selectedFiles.contains(file.path),
+                            isRenaming: renamingFile == file.path,
+                            renameText: $renameText,
+                            onRenameCommit: onRenameCommit,
+                            gitStatus: gitStatuses[file.path.path],
+                            showSizeColumn: columns.showSize,
+                            showDateColumn: columns.showDate,
+                            showKindColumn: columns.showKind,
+                            nameColumnWidth: columns.nameMinWidth,
+                            sizeColumnWidth: CGFloat(sizeColumnWidth),
+                            dateColumnWidth: CGFloat(dateColumnWidth),
+                            kindColumnWidth: CGFloat(kindColumnWidth),
+                            onDropURLs: onDropToFolder
+                        )
+                        .listRowBackground(rowBackground(for: file, index: index))
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets())
+                        .tag(file.path)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            onSelect(file, NSEvent.modifierFlags.contains(.command))
+                        }
+                        .contextMenu { contextMenu(file) }
+                        .draggable(file.path) {
+                            FileDragPreview(name: file.name, icon: file.nsImage)
+                        }
+                    }
+                }
+                .listStyle(.plain)
+                .tint(.accentColor)
+                .environment(\.defaultMinListRowHeight, 22)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .dropDestination(for: URL.self) { urls, _ in
+                    onDropToCurrentDirectory(urls)
                 }
             }
-            .listStyle(.plain)
-            .tint(.accentColor)
-            .environment(\.defaultMinListRowHeight, 22)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
             normalizeColumnWidths()
         }
+    }
+
+    private struct EffectiveListColumns {
+        let showSize: Bool
+        let showDate: Bool
+        let showKind: Bool
+        let nameMinWidth: CGFloat
+    }
+
+    private func resolvedColumns(for availableWidth: CGFloat) -> EffectiveListColumns {
+        let baseNameWidth: CGFloat = 120
+        let total = max(availableWidth - 16, baseNameWidth)
+        var remaining = total - baseNameWidth
+
+        var showSize = false
+        var showDate = false
+        var showKind = false
+
+        if showSizeColumn, remaining >= CGFloat(sizeColumnWidth) {
+            showSize = true
+            remaining -= CGFloat(sizeColumnWidth)
+        }
+
+        if showDateColumn, remaining >= CGFloat(dateColumnWidth) {
+            showDate = true
+            remaining -= CGFloat(dateColumnWidth)
+        }
+
+        if showKindColumn, remaining >= CGFloat(kindColumnWidth) {
+            showKind = true
+        }
+
+        return EffectiveListColumns(
+            showSize: showSize,
+            showDate: showDate,
+            showKind: showKind,
+            nameMinWidth: baseNameWidth
+        )
     }
 
     private func normalizeColumnWidths() {
@@ -1295,10 +1427,10 @@ struct FileListView: View {
 
     private func rowBackground(for file: FileItem, index: Int) -> some View {
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(selectedFiles.contains(file.path) ? Color.accentColor.opacity(0.18) : alternatingRowColor(for: index))
+            .fill(selectedFiles.contains(file.path) ? Color.neutronSelectionAccent.opacity(0.18) : alternatingRowColor(for: index))
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(selectedFiles.contains(file.path) ? Color.accentColor.opacity(0.75) : Color.clear, lineWidth: 1)
+                    .stroke(selectedFiles.contains(file.path) ? Color.neutronSelectionAccent.opacity(0.75) : Color.clear, lineWidth: 1)
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
@@ -1337,7 +1469,8 @@ private struct ResizableSortableHeader: View {
             }
             .foregroundColor(currentColumn == column ? .primary : .secondary)
             .frame(
-                minWidth: isFlexible ? width : nil,
+                minWidth: isFlexible ? minWidth : nil,
+                idealWidth: isFlexible ? width : nil,
                 maxWidth: isFlexible ? .infinity : width,
                 alignment: alignment
             )
@@ -1398,6 +1531,9 @@ struct FileListRow: View {
     var sizeColumnWidth: CGFloat
     var dateColumnWidth: CGFloat
     var kindColumnWidth: CGFloat
+    var onDropURLs: ([URL], URL) -> Bool = { _, _ in false }
+
+    @State private var isDropTargeted = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1465,6 +1601,18 @@ struct FileListRow: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 1)
+        .overlay {
+            if file.isDirectory && isDropTargeted {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.neutronSelectionAccent, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard file.isDirectory else { return false }
+            return onDropURLs(urls, file.path)
+        } isTargeted: { targeting in
+            isDropTargeted = targeting && file.isDirectory
+        }
     }
 }
 
@@ -1491,6 +1639,8 @@ struct IconGridView: View {
     var onOpen: (FileItem) -> Void
     var onSelect: (FileItem, Bool) -> Void
     var contextMenu: (FileItem) -> AnyView
+    var onDropToFolder: ([URL], URL) -> Bool
+    var onDropToCurrentDirectory: ([URL]) -> Bool
 
     init(
         files: [FileItem],
@@ -1499,7 +1649,9 @@ struct IconGridView: View {
         iconSize: Double = 48,
         onOpen: @escaping (FileItem) -> Void,
         onSelect: @escaping (FileItem, Bool) -> Void,
-        contextMenu: @escaping (FileItem) -> some View
+        contextMenu: @escaping (FileItem) -> some View,
+        onDropToFolder: @escaping ([URL], URL) -> Bool,
+        onDropToCurrentDirectory: @escaping ([URL]) -> Bool
     ) {
         self.files = files
         self._selectedFiles = selectedFiles
@@ -1508,6 +1660,8 @@ struct IconGridView: View {
         self.onOpen = onOpen
         self.onSelect = onSelect
         self.contextMenu = { file in AnyView(contextMenu(file)) }
+        self.onDropToFolder = onDropToFolder
+        self.onDropToCurrentDirectory = onDropToCurrentDirectory
     }
 
     var columns: [GridItem] {
@@ -1524,18 +1678,24 @@ struct IconGridView: View {
                         file: file,
                         isSelected: selectedFiles.contains(file.path),
                         gitStatus: gitStatuses[file.path.path],
-                        iconSize: iconSize
+                        iconSize: iconSize,
+                        onDropURLs: onDropToFolder
                     )
                         .onTapGesture {
                             onSelect(file, NSEvent.modifierFlags.contains(.command))
                         }
                         .contextMenu { contextMenu(file) }
-                        .draggable(file.path)
+                        .draggable(file.path) {
+                            FileDragPreview(name: file.name, icon: file.nsImage)
+                        }
                 }
             }
             .padding(8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .dropDestination(for: URL.self) { urls, _ in
+            onDropToCurrentDirectory(urls)
+        }
     }
 }
 
@@ -1544,6 +1704,9 @@ struct IconGridItem: View {
     let isSelected: Bool
     var gitStatus: GitFileStatus? = nil
     var iconSize: Double = 48
+    var onDropURLs: ([URL], URL) -> Bool = { _, _ in false }
+
+    @State private var isDropTargeted = false
 
     var body: some View {
         VStack(spacing: 3) {
@@ -1580,12 +1743,48 @@ struct IconGridItem: View {
         .padding(6)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+                .fill(isSelected ? Color.neutronSelectionAccent.opacity(0.2) : Color.clear)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                .stroke(isSelected ? Color.neutronSelectionAccent : Color.clear, lineWidth: 2)
         )
+        .overlay {
+            if file.isDirectory && isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.neutronSelectionAccent, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard file.isDirectory else { return false }
+            return onDropURLs(urls, file.path)
+        } isTargeted: { targeting in
+            isDropTargeted = targeting && file.isDirectory
+        }
+    }
+}
+
+private struct FileDragPreview: View {
+    let name: String
+    let icon: NSImage
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(nsImage: icon)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 18, height: 18)
+            Text(name)
+                .lineLimit(1)
+                .font(.system(size: 11, weight: .medium))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.neutronSelectionAccent.opacity(0.7), lineWidth: 1)
+        }
     }
 }
 

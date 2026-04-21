@@ -74,6 +74,15 @@ final class DownloadManager: NSObject, ObservableObject {
         }
     }
 
+    struct ManagerSettings: Codable {
+        var maxSimultaneousDownloads: Int
+        var multiConnectionEnabled: Bool
+        var connectionsPerDownload: Int
+        var speedLimitBytesPerSecond: Int64
+        var sourceSpeedLimits: [String: Int64]
+        var sourceConnectionLimits: [String: Int]
+    }
+
     struct SegmentDownload {
         let index: Int
         let range: ClosedRange<Int64>
@@ -108,16 +117,34 @@ final class DownloadManager: NSObject, ObservableObject {
     @Published var maxSimultaneousDownloads: Int = 4 {
         didSet {
             maxSimultaneousDownloads = min(max(maxSimultaneousDownloads, 1), 12)
+            saveManagerSettings()
             scheduleNextDownloads()
         }
     }
-    @Published var multiConnectionEnabled: Bool = true
+    @Published var multiConnectionEnabled: Bool = true {
+        didSet {
+            saveManagerSettings()
+            scheduleNextDownloads()
+        }
+    }
     @Published var connectionsPerDownload: Int = 4 {
         didSet {
             connectionsPerDownload = min(max(connectionsPerDownload, 1), 16)
+            saveManagerSettings()
         }
     }
-    @Published var speedLimitBytesPerSecond: Int64 = 0
+    @Published var speedLimitBytesPerSecond: Int64 = 0 {
+        didSet {
+            speedLimitBytesPerSecond = max(speedLimitBytesPerSecond, 0)
+            saveManagerSettings()
+        }
+    }
+    @Published var sourceSpeedLimits: [String: Int64] = [:] {
+        didSet { saveManagerSettings() }
+    }
+    @Published var sourceConnectionLimits: [String: Int] = [:] {
+        didSet { saveManagerSettings() }
+    }
 
     private var urlSession: URLSession!
     private let queue = DispatchQueue(label: "com.neutron.downloadmanager", qos: .userInitiated)
@@ -126,6 +153,7 @@ final class DownloadManager: NSObject, ObservableObject {
 
     private var queuedResumeData: [UUID: Data] = [:]
     private var isThrottling = false
+    private var throttledSources: Set<String> = []
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -140,6 +168,7 @@ final class DownloadManager: NSObject, ObservableObject {
 
         urlSession = URLSession(configuration: config, delegate: self, delegateQueue: nil)
 
+        loadManagerSettings()
         loadCompletedTasks()
         loadPausedTasks()
     }
@@ -301,10 +330,45 @@ final class DownloadManager: NSObject, ObservableObject {
     func getTask(for id: UUID) -> DownloadTask? { activeTasks[id]?.task }
     func getAllTasks() -> [DownloadTask] { activeTasks.values.map(\.task) }
 
+    func setSourceSpeedLimit(for source: String, bytesPerSecond: Int64) {
+        let key = normalizedSourceKey(source)
+        if bytesPerSecond <= 0 {
+            sourceSpeedLimits.removeValue(forKey: key)
+        } else {
+            sourceSpeedLimits[key] = bytesPerSecond
+        }
+    }
+
+    func sourceSpeedLimit(for source: String) -> Int64 {
+        sourceSpeedLimits[normalizedSourceKey(source)] ?? 0
+    }
+
+    func setSourceConnectionLimit(for source: String, limit: Int) {
+        let key = normalizedSourceKey(source)
+        if limit <= 0 {
+            sourceConnectionLimits.removeValue(forKey: key)
+        } else {
+            sourceConnectionLimits[key] = min(max(limit, 1), 16)
+        }
+    }
+
+    func sourceConnectionLimit(for source: String) -> Int {
+        sourceConnectionLimits[normalizedSourceKey(source)] ?? maxSimultaneousDownloads
+    }
+
+    func knownSources() -> [String] {
+        let fromActive = activeTasks.values.compactMap { $0.task.url.host?.lowercased() }
+        let fromCompleted = completedTasks.compactMap { $0.url.host?.lowercased() }
+        let fromPaused = pausedTasks.compactMap { $0.url.host?.lowercased() }
+        return Array(Set(fromActive + fromCompleted + fromPaused + Array(sourceSpeedLimits.keys) + Array(sourceConnectionLimits.keys))).sorted()
+    }
+
     // MARK: - Queue / Scheduling
 
     private func enqueueOrStart(_ task: DownloadTask) {
-        if runningTasks.count < maxSimultaneousDownloads {
+        let source = sourceKey(for: task.url)
+        if runningTasks.count < maxSimultaneousDownloads,
+           canStartTask(forSource: source) {
             startNetworkTask(for: task)
         } else {
             task.status = .pending
@@ -312,12 +376,15 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func scheduleNextDownloads() {
-        let free = max(0, maxSimultaneousDownloads - runningTasks.count)
+        var free = max(0, maxSimultaneousDownloads - runningTasks.count)
         guard free > 0 else { return }
 
-        let pending = queuedTasks.prefix(free)
-        for task in pending {
+        for task in queuedTasks {
+            guard free > 0 else { break }
+            let source = sourceKey(for: task.url)
+            guard canStartTask(forSource: source) else { continue }
             startNetworkTask(for: task)
+            free -= 1
         }
     }
 
@@ -377,7 +444,12 @@ final class DownloadManager: NSObject, ObservableObject {
     private func startSegmentedDownloadTask(for task: DownloadTask, totalBytes: Int64) {
         guard var active = activeTasks[task.id] else { return }
 
-        let segmentCount = max(1, min(connectionsPerDownload, Int(max(1, totalBytes / minimumSegmentSize))))
+        let source = sourceKey(for: task.url)
+        let sourceLimit = sourceConnectionLimit(for: source)
+        let sourceInUse = activeNetworkConnections(forSource: source)
+        let sourceFree = max(1, sourceLimit - sourceInUse)
+        let maxSegmentsBySize = Int(max(1, totalBytes / minimumSegmentSize))
+        let segmentCount = max(1, min(connectionsPerDownload, min(sourceFree, maxSegmentsBySize)))
         guard segmentCount > 1 else {
             startSingleDownloadTask(for: task, resumeData: nil)
             return
@@ -488,38 +560,102 @@ final class DownloadManager: NSObject, ObservableObject {
             active.bytesAtLastCheck = totalWritten
             activeTasks[taskId] = active
 
-            enforceSpeedLimitIfNeeded()
+            enforceSpeedLimitsIfNeeded()
         } else {
             activeTasks[taskId] = active
         }
     }
 
-    private func enforceSpeedLimitIfNeeded() {
-        guard speedLimitBytesPerSecond > 0, !isThrottling else { return }
+    private func enforceSpeedLimitsIfNeeded() {
+        if speedLimitBytesPerSecond > 0, !isThrottling {
+            let aggregateSpeed = runningTasks.reduce(0.0) { $0 + $1.currentSpeedBytesPerSecond }
+            if aggregateSpeed > Double(speedLimitBytesPerSecond) {
+                isThrottling = true
+                throttleTasks(
+                    matching: { _ in true },
+                    pauseDuration: throttlePauseDuration(current: aggregateSpeed, limit: Double(speedLimitBytesPerSecond))
+                ) { [weak self] in
+                    self?.isThrottling = false
+                }
+            }
+        }
 
-        let aggregateSpeed = runningTasks.reduce(0.0) { $0 + $1.currentSpeedBytesPerSecond }
-        guard aggregateSpeed > Double(speedLimitBytesPerSecond) else { return }
+        for (source, limitValue) in sourceSpeedLimits {
+            guard limitValue > 0, !throttledSources.contains(source) else { continue }
 
-        isThrottling = true
+            let matchingTasks = runningTasks.filter { sourceKey(for: $0.url) == source }
+            guard !matchingTasks.isEmpty else { continue }
 
-        let activeRunning = activeTasks.values.filter { $0.task.status == .downloading }
-        for active in activeRunning {
+            let currentSpeed = matchingTasks.reduce(0.0) { $0 + $1.currentSpeedBytesPerSecond }
+            let limit = Double(limitValue)
+            guard currentSpeed > limit else { continue }
+
+            throttledSources.insert(source)
+            throttleTasks(
+                matching: { self.sourceKey(for: $0.task.url) == source },
+                pauseDuration: throttlePauseDuration(current: currentSpeed, limit: limit)
+            ) { [weak self] in
+                self?.throttledSources.remove(source)
+            }
+        }
+    }
+
+    private func throttlePauseDuration(current: Double, limit: Double) -> TimeInterval {
+        guard current > 0, limit > 0 else { return 0.12 }
+        let overageRatio = min(1.0, max(0.05, (current - limit) / current))
+        return min(0.45, max(0.08, overageRatio * 0.36))
+    }
+
+    private func throttleTasks(
+        matching predicate: @escaping (ActiveDownload) -> Bool,
+        pauseDuration: TimeInterval,
+        completion: @escaping () -> Void
+    ) {
+        let matching = activeTasks.values.filter { $0.task.status == .downloading && predicate($0) }
+        guard !matching.isEmpty else {
+            completion()
+            return
+        }
+
+        for active in matching {
             active.singleTask?.suspend()
             active.segments.values.forEach { $0.urlTask?.suspend() }
         }
 
-        let overageRatio = min(1.0, max(0.05, (aggregateSpeed - Double(speedLimitBytesPerSecond)) / aggregateSpeed))
-        let pauseDuration = min(0.40, max(0.08, overageRatio * 0.35))
-
         DispatchQueue.main.asyncAfter(deadline: .now() + pauseDuration) { [weak self] in
             guard let self else { return }
-            let activeRunning = self.activeTasks.values.filter { $0.task.status == .downloading }
-            for active in activeRunning {
+            let stillRunning = self.activeTasks.values.filter { $0.task.status == .downloading && predicate($0) }
+            for active in stillRunning {
                 active.singleTask?.resume()
                 active.segments.values.forEach { $0.urlTask?.resume() }
             }
-            self.isThrottling = false
+            completion()
         }
+    }
+
+    private func canStartTask(forSource source: String) -> Bool {
+        runningDownloadsCount(forSource: source) < sourceConnectionLimit(for: source)
+    }
+
+    private func runningDownloadsCount(forSource source: String) -> Int {
+        activeTasks.values.filter {
+            ($0.task.status == .downloading || $0.task.status == .repairing)
+            && sourceKey(for: $0.task.url) == source
+        }.count
+    }
+
+    private func activeNetworkConnections(forSource source: String) -> Int {
+        activeTasks.values
+            .filter { sourceKey(for: $0.task.url) == source }
+            .reduce(0) { $0 + $1.runningNetworkTasks }
+    }
+
+    private func sourceKey(for url: URL) -> String {
+        normalizedSourceKey(url.host ?? "general")
+    }
+
+    private func normalizedSourceKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     // MARK: - Completion / Failure
@@ -787,6 +923,43 @@ final class DownloadManager: NSObject, ObservableObject {
            let records = try? decoder.decode([DownloadRecord].self, from: data) {
             pausedTasks = records
         }
+    }
+
+    private func saveManagerSettings() {
+        let settings = ManagerSettings(
+            maxSimultaneousDownloads: maxSimultaneousDownloads,
+            multiConnectionEnabled: multiConnectionEnabled,
+            connectionsPerDownload: connectionsPerDownload,
+            speedLimitBytesPerSecond: speedLimitBytesPerSecond,
+            sourceSpeedLimits: sourceSpeedLimits,
+            sourceConnectionLimits: sourceConnectionLimits
+        )
+
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("neutron/downloads", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("manager-settings.json")
+
+        if let data = try? encoder.encode(settings) {
+            try? data.write(to: url)
+        }
+    }
+
+    private func loadManagerSettings() {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let url = appSupport.appendingPathComponent("neutron/downloads/manager-settings.json")
+
+        guard let data = try? Data(contentsOf: url),
+              let settings = try? decoder.decode(ManagerSettings.self, from: data) else {
+            return
+        }
+
+        maxSimultaneousDownloads = min(max(settings.maxSimultaneousDownloads, 1), 12)
+        multiConnectionEnabled = settings.multiConnectionEnabled
+        connectionsPerDownload = min(max(settings.connectionsPerDownload, 1), 16)
+        speedLimitBytesPerSecond = max(settings.speedLimitBytesPerSecond, 0)
+        sourceSpeedLimits = settings.sourceSpeedLimits
+        sourceConnectionLimits = settings.sourceConnectionLimits
     }
 
     // MARK: - Temp Artifacts

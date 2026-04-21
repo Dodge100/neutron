@@ -42,6 +42,23 @@ struct FileTab: Identifiable, Equatable {
     }
 }
 
+struct TabDragPayload: Codable, Hashable {
+    let tabID: UUID
+    let sourcePaneID: UUID
+    let title: String
+    let path: String
+
+    func encoded() -> String? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return data.base64EncodedString()
+    }
+
+    static func decode(_ raw: String) -> TabDragPayload? {
+        guard let data = Data(base64Encoded: raw) else { return nil }
+        return try? JSONDecoder().decode(TabDragPayload.self, from: data)
+    }
+}
+
 struct PaneState: Identifiable, Equatable {
     let id: UUID
     var tabs: [FileTab]
@@ -319,8 +336,18 @@ struct DualPaneView: View {
     @ViewBuilder
     private var workspaceView: some View {
         GeometryReader { proxy in
-            let previewVisible = sharedPreviewItem != nil
-            let clampedPreviewWidth = min(max(previewColumnWidth, 220), max(proxy.size.width * 0.4, 220))
+            let minMainWidth: CGFloat = 520
+            let minPreviewWidth: CGFloat = 220
+            let maxPreviewWidth: CGFloat = 460
+
+            let totalWidth = proxy.size.width
+            let previewRequested = sharedPreviewItem != nil
+            let availablePreviewMax = max(0, totalWidth - minMainWidth)
+            let effectivePreviewWidth = min(
+                max(CGFloat(previewColumnWidth), minPreviewWidth),
+                min(maxPreviewWidth, availablePreviewMax)
+            )
+            let canShowPreview = previewRequested && availablePreviewMax >= minPreviewWidth
 
             HStack(spacing: 0) {
                 PaneWorkspaceNodeView(
@@ -339,20 +366,21 @@ struct DualPaneView: View {
                     onViewModeChange: handleViewModeChange,
                     onAddSiblingPane: addPane(nextTo:axis:),
                     onRemovePane: removePane(_:),
-                    onPreviewSelectionChange: handlePreviewSelectionChange(for:item:)
+                    onPreviewSelectionChange: handlePreviewSelectionChange(for:item:),
+                    onDropTab: handleDroppedTab(_:into:targetIndex:)
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if let sharedPreviewItem {
+                if canShowPreview, let sharedPreviewItem {
                     Divider()
                     FinderPreviewColumn(file: sharedPreviewItem)
-                        .frame(width: clampedPreviewWidth)
+                        .frame(width: effectivePreviewWidth)
                         .onAppear {
-                            previewColumnWidth = clampedPreviewWidth
+                            previewColumnWidth = Double(effectivePreviewWidth)
                         }
                 }
             }
-            .animation(.easeInOut(duration: 0.16), value: previewVisible)
+            .animation(.easeInOut(duration: 0.16), value: canShowPreview)
         }
     }
 
@@ -519,6 +547,57 @@ struct DualPaneView: View {
             focusedPaneID = paneID
             syncFocusedPaneState()
         }
+    }
+
+    @discardableResult
+    private func handleDroppedTab(_ payload: TabDragPayload, into targetPaneID: UUID, targetIndex: Int?) -> Bool {
+        guard var sourcePane = paneStates[payload.sourcePaneID],
+              var targetPane = paneStates[targetPaneID],
+              let sourceIndex = sourcePane.tabs.firstIndex(where: { $0.id == payload.tabID }) else {
+            return false
+        }
+
+        let movedTab = sourcePane.tabs[sourceIndex]
+
+        if payload.sourcePaneID == targetPaneID {
+            var tabs = sourcePane.tabs
+            tabs.remove(at: sourceIndex)
+
+            var insertionIndex = targetIndex ?? tabs.count
+            insertionIndex = max(0, min(insertionIndex, tabs.count))
+            if insertionIndex > sourceIndex {
+                insertionIndex -= 1
+            }
+
+            tabs.insert(movedTab, at: insertionIndex)
+            sourcePane.tabs = tabs
+            sourcePane.selectedTabId = movedTab.id
+            paneStates[targetPaneID] = sourcePane
+            focusedPaneID = targetPaneID
+            syncFocusedPaneState()
+            return true
+        }
+
+        sourcePane.tabs.remove(at: sourceIndex)
+        if sourcePane.tabs.isEmpty {
+            sourcePane.addTab(path: FileManager.default.homeDirectoryForCurrentUser)
+        }
+        if sourcePane.selectedTabId == movedTab.id {
+            sourcePane.selectedTabId = sourcePane.tabs.first?.id
+        }
+        sourcePane.previewItem = nil
+
+        var insertionIndex = targetIndex ?? targetPane.tabs.count
+        insertionIndex = max(0, min(insertionIndex, targetPane.tabs.count))
+        targetPane.tabs.insert(movedTab, at: insertionIndex)
+        targetPane.selectedTabId = movedTab.id
+        targetPane.previewItem = nil
+
+        paneStates[payload.sourcePaneID] = sourcePane
+        paneStates[targetPaneID] = targetPane
+        focusedPaneID = targetPaneID
+        syncFocusedPaneState()
+        return true
     }
 
     private func otherPaneID() -> UUID? {
@@ -720,6 +799,7 @@ struct PaneWorkspaceNodeView: View {
     var onAddSiblingPane: (UUID, PaneAxis) -> Void
     var onRemovePane: (UUID) -> Void
     var onPreviewSelectionChange: (UUID, FilePreviewItem?) -> Void
+    var onDropTab: (TabDragPayload, UUID, Int?) -> Bool
 
     var body: some View {
         switch node {
@@ -760,6 +840,9 @@ struct PaneWorkspaceNodeView: View {
                     },
                     onPreviewSelectionChange: { previewItem in
                         onPreviewSelectionChange(paneID, previewItem)
+                    },
+                    onDropTab: { payload, targetIndex in
+                        onDropTab(payload, paneID, targetIndex)
                     }
                 )
             }
@@ -785,7 +868,8 @@ struct PaneWorkspaceNodeView: View {
                             onViewModeChange: onViewModeChange,
                             onAddSiblingPane: onAddSiblingPane,
                             onRemovePane: onRemovePane,
-                            onPreviewSelectionChange: onPreviewSelectionChange
+                            onPreviewSelectionChange: onPreviewSelectionChange,
+                            onDropTab: onDropTab
                         )
                         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
                     )
@@ -928,7 +1012,7 @@ struct PaneDividerView: View {
 
     var body: some View {
         Rectangle()
-            .fill(isHovering ? Color.accentColor.opacity(0.5) : Color(nsColor: .separatorColor))
+            .fill(isHovering ? Color(nsColor: .controlAccentColor).opacity(0.5) : Color(nsColor: .separatorColor))
             .frame(
                 width: axis == .horizontal ? (isHovering ? 4 : 1) : nil,
                 height: axis == .vertical ? (isHovering ? 4 : 1) : nil
@@ -1004,6 +1088,7 @@ struct WorkspacePaneContainerView: View {
     var onAddVertical: () -> Void
     var onClosePane: () -> Void
     var onPreviewSelectionChange: (FilePreviewItem?) -> Void
+    var onDropTab: (TabDragPayload, Int?) -> Bool
 
     @State private var fileBrowserCommand: FileBrowserCommand?
 
@@ -1056,6 +1141,7 @@ struct WorkspacePaneContainerView: View {
     private var paneContainer: some View {
         VStack(spacing: 0) {
             PaneTabStripView(
+                paneID: paneID,
                 tabs: paneState.tabs,
                 selectedTabID: paneState.selectedTabId,
                 onSelect: { tab in
@@ -1066,7 +1152,8 @@ struct WorkspacePaneContainerView: View {
                 },
                 onNewTab: {
                     addNewTab()
-                }
+                },
+                onDropTab: onDropTab
             )
 
             Divider()
@@ -1092,7 +1179,7 @@ struct WorkspacePaneContainerView: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 4)
-                .stroke(isFocused ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
+                .stroke(isFocused ? Color(nsColor: .controlAccentColor).opacity(0.5) : Color.clear, lineWidth: 1)
         }
     }
 
@@ -1242,21 +1329,33 @@ struct WorkspacePaneContainerView: View {
 }
 
 private struct PaneTabStripView: View {
+    let paneID: UUID
     let tabs: [FileTab]
     let selectedTabID: UUID?
     var onSelect: (FileTab) -> Void
     var onClose: (FileTab) -> Void
     var onNewTab: () -> Void
+    var onDropTab: (TabDragPayload, Int?) -> Bool
+
+    @State private var dropIndex: Int?
 
     var body: some View {
         HStack(spacing: 4) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+                        let payload = TabDragPayload(
+                            tabID: tab.id,
+                            sourcePaneID: paneID,
+                            title: tab.title,
+                            path: tab.path.path
+                        )
+
                         PaneTabStripItem(
                             title: tab.title,
                             isSelected: tab.id == selectedTabID,
                             alternate: index.isMultiple(of: 2),
+                            isDropTargeted: dropIndex == index,
                             onSelect: {
                                 onSelect(tab)
                             },
@@ -1264,9 +1363,28 @@ private struct PaneTabStripView: View {
                                 onClose(tab)
                             }
                         )
+                        .draggable(payload.encoded() ?? "") {
+                            TabDragPreview(title: tab.title)
+                        }
+                        .dropDestination(for: String.self) { items, _ in
+                            guard let raw = items.first,
+                                  let decoded = TabDragPayload.decode(raw) else { return false }
+                            return onDropTab(decoded, index)
+                        } isTargeted: { targeting in
+                            dropIndex = targeting ? index : nil
+                        }
                     }
                 }
                 .padding(.horizontal, 6)
+                .dropDestination(for: String.self) { items, _ in
+                    guard let raw = items.first,
+                          let decoded = TabDragPayload.decode(raw) else { return false }
+                    return onDropTab(decoded, nil)
+                } isTargeted: { targeting in
+                    if !targeting {
+                        dropIndex = nil
+                    }
+                }
             }
 
             Button(action: onNewTab) {
@@ -1282,10 +1400,33 @@ private struct PaneTabStripView: View {
     }
 }
 
+private struct TabDragPreview: View {
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 11, weight: .semibold))
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .frame(maxWidth: 180, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color(nsColor: .controlAccentColor).opacity(0.7), lineWidth: 1)
+        }
+    }
+}
+
 private struct PaneTabStripItem: View {
     let title: String
     let isSelected: Bool
     let alternate: Bool
+    var isDropTargeted: Bool = false
     var onSelect: () -> Void
     var onClose: () -> Void
 
@@ -1326,6 +1467,12 @@ private struct PaneTabStripItem: View {
         .overlay {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .stroke(isSelected ? Color(nsColor: .separatorColor) : Color.clear, lineWidth: 0.7)
+        }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color(nsColor: .controlAccentColor), style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
+            }
         }
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .onTapGesture(perform: onSelect)
