@@ -1796,48 +1796,65 @@ struct ColumnView: View {
     var searchText: String
     var onPreviewSelectionChange: (FileItem?) -> Void
 
-    @State private var primaryFiles: [FileItem] = []
-    @State private var secondaryFiles: [FileItem] = []
-    @State private var primarySelection: URL?
-    @State private var secondarySelection: URL?
+    @State private var columns: [ColumnData] = []
     @State private var lastClickedURL: URL?
     @State private var lastClickTimestamp: TimeInterval = 0
 
     var body: some View {
-        HSplitView {
-            ColumnListView(
-                title: currentPath.lastPathComponent.isEmpty ? "/" : currentPath.lastPathComponent,
-                files: filtered(files: primaryFiles),
-                selectedURL: $primarySelection,
-                onSelect: handlePrimarySelect,
-                onOpen: handlePrimaryOpen
-            )
-            .frame(minWidth: 180, idealWidth: 240)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    ForEach(Array(columns.enumerated()), id: \.element.id) { index, column in
+                        ColumnListView(
+                            title: column.title,
+                            files: filtered(files: column.files),
+                            selectedURL: selectionBinding(for: index),
+                            onSelect: { file in handleSelect(file, inColumnAt: index) },
+                            onOpen: handleOpen
+                        )
+                        .frame(width: 240)
+                        .id(column.id)
 
-            ColumnListView(
-                title: secondaryTitle,
-                files: filtered(files: secondaryFiles),
-                selectedURL: $secondarySelection,
-                onSelect: handleSecondarySelect,
-                onOpen: handleSecondaryOpen
-            )
-            .frame(minWidth: 180, idealWidth: 240)
+                        if index < columns.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
+                .frame(maxHeight: .infinity)
+            }
+            .onChange(of: columns.map(\.id)) { _, ids in
+                guard let lastID = ids.last else { return }
+                DispatchQueue.main.async {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        proxy.scrollTo(lastID, anchor: .trailing)
+                    }
+                }
+            }
         }
         .onAppear {
-            loadPrimaryFiles(for: currentPath)
+            rebuildColumns(for: currentPath)
             onPreviewSelectionChange(nil)
         }
         .onChange(of: currentPath) { _, newPath in
-            loadPrimaryFiles(for: newPath)
+            rebuildColumns(for: newPath)
             onPreviewSelectionChange(nil)
+        }
+        .onChange(of: showHiddenFiles) { _, _ in
+            rebuildColumns(for: currentPath)
         }
     }
 
-    private var secondaryTitle: String {
-        if let selectedDir = primaryFiles.first(where: { $0.path == primarySelection && $0.isDirectory }) {
-            return selectedDir.name
+    private struct ColumnData: Identifiable, Equatable {
+        let directory: URL
+        var files: [FileItem]
+        var selectedURL: URL?
+
+        var id: String { directory.standardizedFileURL.path }
+
+        var title: String {
+            if directory.path == "/" { return "/" }
+            return VirtualLocation.displayName(for: directory)
         }
-        return "Items"
     }
 
     private func filtered(files: [FileItem]) -> [FileItem] {
@@ -1846,17 +1863,30 @@ struct ColumnView: View {
         return files.filter { $0.name.localizedCaseInsensitiveContains(text) }
     }
 
-    private func handlePrimarySelect(_ file: FileItem) {
+    private func selectionBinding(for index: Int) -> Binding<URL?> {
+        Binding(
+            get: {
+                guard columns.indices.contains(index) else { return nil }
+                return columns[index].selectedURL
+            },
+            set: { newValue in
+                guard columns.indices.contains(index) else { return }
+                columns[index].selectedURL = newValue
+            }
+        )
+    }
+
+    private func handleSelect(_ file: FileItem, inColumnAt index: Int) {
+        guard columns.indices.contains(index) else { return }
+
         let shouldOpen = registerClick(for: file)
-        secondarySelection = nil
+        columns[index].selectedURL = file.path
+
         if file.isDirectory {
             onPreviewSelectionChange(nil)
-            loadSecondaryFiles(for: file.path)
-            if shouldOpen {
-                currentPath = file.path
-            }
+            currentPath = file.path
         } else {
-            secondaryFiles = []
+            columns = Array(columns.prefix(index + 1))
             onPreviewSelectionChange(file)
             if shouldOpen {
                 NSWorkspace.shared.open(file.path)
@@ -1864,7 +1894,7 @@ struct ColumnView: View {
         }
     }
 
-    private func handlePrimaryOpen(_ file: FileItem) {
+    private func handleOpen(_ file: FileItem) {
         if file.isDirectory {
             currentPath = file.path
         } else {
@@ -1872,64 +1902,74 @@ struct ColumnView: View {
         }
     }
 
-    private func handleSecondarySelect(_ file: FileItem) {
-        onPreviewSelectionChange(file)
-        if registerClick(for: file) {
-            handleSecondaryOpen(file)
-        }
-    }
-
-    private func handleSecondaryOpen(_ file: FileItem) {
-        if file.isDirectory {
-            currentPath = file.path
-        } else {
-            NSWorkspace.shared.open(file.path)
-        }
-    }
-
-    private func loadPrimaryFiles(for path: URL) {
-        let expectedPath = path
-        loadFiles(at: path) { items in
-            guard self.currentPath == expectedPath else { return }
-            self.primaryFiles = items
-            self.primarySelection = nil
-            self.secondaryFiles = []
-            self.secondarySelection = nil
-        }
-    }
-
-    private func loadSecondaryFiles(for path: URL) {
-        let expectedPath = path
-        loadFiles(at: path) { items in
-            let selectedIsStillExpected = self.primaryFiles.contains {
-                $0.path == self.primarySelection && $0.path == expectedPath
-            }
-            guard selectedIsStillExpected else { return }
-            self.secondaryFiles = items
-            self.secondarySelection = nil
-        }
-    }
-
-    private func loadFiles(at path: URL, apply: @escaping ([FileItem]) -> Void) {
+    private func rebuildColumns(for path: URL) {
+        let expectedPath = path.standardizedFileURL
+        let chain = directoryChain(to: expectedPath)
         let includeHidden = showHiddenFiles
-        DispatchQueue.global(qos: .userInitiated).async {
-            let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
-            let urls = (try? FileManager.default.contentsOfDirectory(
-                at: path,
-                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .tagNamesKey],
-                options: options
-            )) ?? []
 
-            let items = urls.compactMap { FileItem.fromURL($0) }
-                .sorted { a, b in
-                    if a.isDirectory != b.isDirectory { return a.isDirectory }
-                    return a.name.localizedCompare(b.name) == .orderedAscending
-                }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let loadedColumns = chain.enumerated().map { index, directory in
+                ColumnData(
+                    directory: directory,
+                    files: Self.loadFiles(at: directory, includeHidden: includeHidden),
+                    selectedURL: index < chain.count - 1 ? chain[index + 1] : nil
+                )
+            }
 
             DispatchQueue.main.async {
-                apply(items)
+                guard self.currentPath.standardizedFileURL.path == expectedPath.path else { return }
+                self.columns = loadedColumns
             }
         }
+    }
+
+    private func directoryChain(to path: URL) -> [URL] {
+        guard path.isFileURL else { return [path] }
+
+        let fileManager = FileManager.default
+        let directoryPath: URL
+        if (try? path.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == false {
+            directoryPath = path.deletingLastPathComponent().standardizedFileURL
+        } else {
+            directoryPath = path.standardizedFileURL
+        }
+
+        if directoryPath.path == "/" {
+            return [URL(fileURLWithPath: "/", isDirectory: true)]
+        }
+
+        var chain = [URL(fileURLWithPath: "/", isDirectory: true)]
+        var current = chain[0]
+
+        for component in directoryPath.pathComponents where component != "/" {
+            current = current.appendingPathComponent(component, isDirectory: true).standardizedFileURL
+            if fileManager.fileExists(atPath: current.path) {
+                chain.append(current)
+            }
+        }
+
+        return chain
+    }
+
+    private static func loadFiles(at path: URL, includeHidden: Bool) -> [FileItem] {
+        let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: path,
+            includingPropertiesForKeys: [
+                .isDirectoryKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+                .creationDateKey,
+                .tagNamesKey,
+            ],
+            options: options
+        )) ?? []
+
+        return urls.compactMap { FileItem.fromURL($0) }
+            .sorted { a, b in
+                if a.isDirectory != b.isDirectory { return a.isDirectory }
+                return a.name.localizedCompare(b.name) == .orderedAscending
+            }
     }
 
     private func registerClick(for file: FileItem) -> Bool {

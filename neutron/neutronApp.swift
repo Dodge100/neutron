@@ -9,8 +9,18 @@ import SwiftUI
 
 @main
 struct neutronApp: App {
+    @StateObject private var shortcutManager = ShortcutManager.shared
+
     init() {
         MCPTaskManager.shared.taskProvider = DownloadManagerProvider.shared
+    }
+
+    @ViewBuilder
+    private func shortcutCommand(_ title: String, action: ShortcutAction) -> some View {
+        Button(title) {
+            action.trigger()
+        }
+        .applyingShortcut(shortcutManager.shortcut(for: action))
     }
 
     var body: some Scene {
@@ -19,129 +29,38 @@ struct neutronApp: App {
         }
         .commands {
             CommandGroup(after: .newItem) {
-                Button("New Folder") {
-                    NotificationCenter.default.post(name: .createNewFolder, object: nil)
-                }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
+                shortcutCommand("New Folder", action: .newFolder)
 
                 Divider()
 
-                Button("New Tab") {
-                    NotificationCenter.default.post(name: .newTab, object: nil)
-                }
-                .keyboardShortcut("t", modifiers: .command)
-
-                Button("Close Tab") {
-                    NotificationCenter.default.post(name: .closeTab, object: nil)
-                }
-                .keyboardShortcut("w", modifiers: .command)
+                shortcutCommand("New Tab", action: .newTab)
+                shortcutCommand("Close Tab", action: .closeTab)
             }
 
             CommandGroup(after: .pasteboard) {
-                Button("Select All") {
-                    NotificationCenter.default.post(name: .selectAll, object: nil)
-                }
-                .keyboardShortcut("a", modifiers: .command)
-
-                Button("Duplicate") {
-                    NotificationCenter.default.post(name: .duplicateFiles, object: nil)
-                }
-                .keyboardShortcut("d", modifiers: [.command, .option])
+                shortcutCommand("Select All", action: .selectAll)
+                shortcutCommand("Duplicate", action: .duplicate)
             }
 
             CommandGroup(after: .toolbar) {
-                Button("Toggle Hidden Files") {
-                    NotificationCenter.default.post(name: .toggleHiddenFiles, object: nil)
-                }
-                .keyboardShortcut(".", modifiers: [.command, .shift])
+                shortcutCommand("Toggle Hidden Files", action: .toggleHidden)
 
                 Divider()
 
-                Button("Split Horizontally") {
-                    NotificationCenter.default.post(name: .splitPaneHorizontal, object: nil)
-                }
-                .keyboardShortcut("d", modifiers: .command)
-
-                Button("Split Vertically") {
-                    NotificationCenter.default.post(name: .splitPaneVertical, object: nil)
-                }
-                .keyboardShortcut("d", modifiers: [.command, .shift])
+                shortcutCommand("Split Horizontally", action: .splitPaneHorizontal)
+                shortcutCommand("Split Vertically", action: .splitPaneVertical)
 
                 Divider()
 
-                Button("as Icons") {
-                    NotificationCenter.default.post(name: .setViewMode, object: "icon")
-                }
-                .keyboardShortcut("1", modifiers: [.command, .control])
-
-                Button("as List") {
-                    NotificationCenter.default.post(name: .setViewMode, object: "list")
-                }
-                .keyboardShortcut("2", modifiers: [.command, .control])
-
-                Button("as Columns") {
-                    NotificationCenter.default.post(name: .setViewMode, object: "column")
-                }
-                .keyboardShortcut("3", modifiers: [.command, .control])
-            }
-
-            CommandMenu("Tabs") {
-                Button("Select Tab 1") { NotificationCenter.default.post(name: .selectTabAtIndex, object: 0) }
-                    .keyboardShortcut("1", modifiers: .command)
-                Button("Select Tab 2") { NotificationCenter.default.post(name: .selectTabAtIndex, object: 1) }
-                    .keyboardShortcut("2", modifiers: .command)
-                Button("Select Tab 3") { NotificationCenter.default.post(name: .selectTabAtIndex, object: 2) }
-                    .keyboardShortcut("3", modifiers: .command)
-                Button("Select Tab 4") { NotificationCenter.default.post(name: .selectTabAtIndex, object: 3) }
-                    .keyboardShortcut("4", modifiers: .command)
-                Button("Select Tab 5") { NotificationCenter.default.post(name: .selectTabAtIndex, object: 4) }
-                    .keyboardShortcut("5", modifiers: .command)
-                Button("Select Tab 6") { NotificationCenter.default.post(name: .selectTabAtIndex, object: 5) }
-                    .keyboardShortcut("6", modifiers: .command)
-                Button("Select Tab 7") { NotificationCenter.default.post(name: .selectTabAtIndex, object: 6) }
-                    .keyboardShortcut("7", modifiers: .command)
-                Button("Select Tab 8") { NotificationCenter.default.post(name: .selectTabAtIndex, object: 7) }
-                    .keyboardShortcut("8", modifiers: .command)
-                Button("Select Tab 9") { NotificationCenter.default.post(name: .selectTabAtIndex, object: 8) }
-                    .keyboardShortcut("9", modifiers: .command)
-
-                Divider()
-
-                Button("Select Tab 1 in Other Pane") { NotificationCenter.default.post(name: .selectTabAtIndexInOtherPane, object: 0) }
-                    .keyboardShortcut("1", modifiers: [.command, .option])
-                Button("Select Tab 2 in Other Pane") { NotificationCenter.default.post(name: .selectTabAtIndexInOtherPane, object: 1) }
-                    .keyboardShortcut("2", modifiers: [.command, .option])
-                Button("Select Tab 3 in Other Pane") { NotificationCenter.default.post(name: .selectTabAtIndexInOtherPane, object: 2) }
-                    .keyboardShortcut("3", modifiers: [.command, .option])
-                Button("Select Tab 4 in Other Pane") { NotificationCenter.default.post(name: .selectTabAtIndexInOtherPane, object: 3) }
-                    .keyboardShortcut("4", modifiers: [.command, .option])
-                Button("Select Tab 5 in Other Pane") { NotificationCenter.default.post(name: .selectTabAtIndexInOtherPane, object: 4) }
-                    .keyboardShortcut("5", modifiers: [.command, .option])
-                Button("Select Tab 6 in Other Pane") { NotificationCenter.default.post(name: .selectTabAtIndexInOtherPane, object: 5) }
-                    .keyboardShortcut("6", modifiers: [.command, .option])
-                Button("Select Tab 7 in Other Pane") { NotificationCenter.default.post(name: .selectTabAtIndexInOtherPane, object: 6) }
-                    .keyboardShortcut("7", modifiers: [.command, .option])
-                Button("Select Tab 8 in Other Pane") { NotificationCenter.default.post(name: .selectTabAtIndexInOtherPane, object: 7) }
-                    .keyboardShortcut("8", modifiers: [.command, .option])
-                Button("Select Tab 9 in Other Pane") { NotificationCenter.default.post(name: .selectTabAtIndexInOtherPane, object: 8) }
-                    .keyboardShortcut("9", modifiers: [.command, .option])
+                shortcutCommand("as Icons", action: .viewAsIcons)
+                shortcutCommand("as List", action: .viewAsList)
+                shortcutCommand("as Columns", action: .viewAsColumns)
             }
 
             CommandMenu("Go") {
-                Button("Back") {
-                    NotificationCenter.default.post(name: .navigateBack, object: nil)
-                }
-                .keyboardShortcut("[", modifiers: .command)
-
-                Button("Forward") {
-                    NotificationCenter.default.post(name: .navigateForward, object: nil)
-                }
-                .keyboardShortcut("]", modifiers: .command)
-
-                Button("Enclosing Folder") {
-                    NotificationCenter.default.post(name: .goToParentFolder, object: nil)
-                }
-                .keyboardShortcut(.upArrow, modifiers: .command)
+                shortcutCommand("Back", action: .goBack)
+                shortcutCommand("Forward", action: .goForward)
+                shortcutCommand("Enclosing Folder", action: .goUp)
 
                 Button("Open Selected") {
                     NotificationCenter.default.post(name: .openSelectedItem, object: nil)
@@ -150,25 +69,10 @@ struct neutronApp: App {
 
                 Divider()
 
-                Button("Home") {
-                    NotificationCenter.default.post(name: .goHome, object: nil)
-                }
-                .keyboardShortcut("h", modifiers: [.command, .shift])
-
-                Button("Desktop") {
-                    NotificationCenter.default.post(name: .goDesktop, object: nil)
-                }
-                .keyboardShortcut("d", modifiers: [.command, .option, .shift])
-
-                Button("Downloads") {
-                    NotificationCenter.default.post(name: .goDownloads, object: nil)
-                }
-                .keyboardShortcut("l", modifiers: [.command, .option])
-
-                Button("Documents") {
-                    NotificationCenter.default.post(name: .goDocuments, object: nil)
-                }
-                .keyboardShortcut("o", modifiers: [.command, .shift])
+                shortcutCommand("Home", action: .goHome)
+                shortcutCommand("Desktop", action: .goDesktop)
+                shortcutCommand("Downloads", action: .goDownloads)
+                shortcutCommand("Documents", action: .goDocuments)
 
                 Divider()
 
@@ -198,10 +102,7 @@ struct neutronApp: App {
 
                 Divider()
 
-                Button("Open Terminal Here") {
-                    NotificationCenter.default.post(name: .openInTerminal, object: nil)
-                }
-                .keyboardShortcut("`", modifiers: .command)
+                shortcutCommand("Open Terminal Here", action: .openTerminal)
             }
         }
 

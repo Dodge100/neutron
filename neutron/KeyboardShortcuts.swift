@@ -15,6 +15,8 @@ import Carbon.HIToolbox
 enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     case newTab = "New Tab"
     case closeTab = "Close Tab"
+    case splitPaneHorizontal = "Split Pane Horizontally"
+    case splitPaneVertical = "Split Pane Vertically"
     case newFolder = "New Folder"
     case duplicate = "Duplicate"
     case delete = "Move to Trash"
@@ -40,6 +42,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     case viewAsIcons = "View as Icons"
     case viewAsList = "View as List"
     case viewAsColumns = "View as Columns"
+    case commandPalette = "Command Palette"
     
     var id: String { rawValue }
     
@@ -47,8 +50,10 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .newTab: return NeutronShortcut(key: "t", modifiers: .command)
         case .closeTab: return NeutronShortcut(key: "w", modifiers: .command)
+        case .splitPaneHorizontal: return NeutronShortcut(key: "d", modifiers: .command)
+        case .splitPaneVertical: return NeutronShortcut(key: "d", modifiers: [.command, .shift])
         case .newFolder: return NeutronShortcut(key: "n", modifiers: [.command, .shift])
-        case .duplicate: return NeutronShortcut(key: "d", modifiers: .command)
+        case .duplicate: return NeutronShortcut(key: "d", modifiers: [.command, .option])
         case .delete: return NeutronShortcut(key: .delete, modifiers: .command)
         case .copy: return NeutronShortcut(key: "c", modifiers: .command)
         case .paste: return NeutronShortcut(key: "v", modifiers: .command)
@@ -59,7 +64,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .goForward: return NeutronShortcut(key: "]", modifiers: .command)
         case .goUp: return NeutronShortcut(key: .upArrow, modifiers: .command)
         case .goHome: return NeutronShortcut(key: "h", modifiers: [.command, .shift])
-        case .goDesktop: return NeutronShortcut(key: "d", modifiers: [.command, .shift])
+        case .goDesktop: return NeutronShortcut(key: "k", modifiers: [.command, .shift])
         case .goDownloads: return NeutronShortcut(key: "l", modifiers: [.command, .option])
         case .goDocuments: return NeutronShortcut(key: "o", modifiers: [.command, .shift])
         case .toggleHidden: return NeutronShortcut(key: ".", modifiers: [.command, .shift])
@@ -68,10 +73,11 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .rename: return NeutronShortcut(key: .return, modifiers: [])
         case .openTerminal: return NeutronShortcut(key: "`", modifiers: .command)
         case .refresh: return NeutronShortcut(key: "r", modifiers: .command)
-        case .toggleRightPane: return NeutronShortcut(key: "2", modifiers: .command)
+        case .toggleRightPane: return NeutronShortcut(key: "0", modifiers: .command)
         case .viewAsIcons: return NeutronShortcut(key: "1", modifiers: .command)
-        case .viewAsList: return NeutronShortcut(key: "2", modifiers: [.command, .option])
+        case .viewAsList: return NeutronShortcut(key: "2", modifiers: .command)
         case .viewAsColumns: return NeutronShortcut(key: "3", modifiers: .command)
+        case .commandPalette: return NeutronShortcut(key: "p", modifiers: .command)
         }
     }
     
@@ -79,6 +85,8 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .newTab: return .newTab
         case .closeTab: return .closeTab
+        case .splitPaneHorizontal: return .splitPaneHorizontal
+        case .splitPaneVertical: return .splitPaneVertical
         case .newFolder: return .createNewFolder
         case .duplicate: return .duplicateSelectedFiles
         case .delete: return .trashSelectedFiles
@@ -101,9 +109,21 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .openTerminal: return .openInTerminal
         case .refresh: return .refreshFiles
         case .toggleRightPane: return .toggleRightPane
-        case .viewAsIcons: return Notification.Name("neutron.setViewModeIcon")
-        case .viewAsList: return Notification.Name("neutron.setViewModeList")
-        case .viewAsColumns: return Notification.Name("neutron.setViewModeColumn")
+        case .viewAsIcons, .viewAsList, .viewAsColumns: return .setViewMode
+        case .commandPalette: return .showCommandPalette
+        }
+    }
+
+    func trigger() {
+        switch self {
+        case .viewAsIcons:
+            NotificationCenter.default.post(name: .setViewMode, object: "icon")
+        case .viewAsList:
+            NotificationCenter.default.post(name: .setViewMode, object: "list")
+        case .viewAsColumns:
+            NotificationCenter.default.post(name: .setViewMode, object: "column")
+        default:
+            NotificationCenter.default.post(name: notificationName, object: nil)
         }
     }
 }
@@ -117,6 +137,45 @@ struct NeutronShortcut: Codable, Equatable {
     init(key: KeyEquivalent, modifiers: SwiftUI.EventModifiers) {
         self.key = key
         self.modifiers = modifiers
+    }
+
+    init?(event: NSEvent) {
+        guard event.type == .keyDown else { return nil }
+
+        var modifiers: SwiftUI.EventModifiers = []
+        if event.modifierFlags.contains(.command) { modifiers.insert(.command) }
+        if event.modifierFlags.contains(.shift) { modifiers.insert(.shift) }
+        if event.modifierFlags.contains(.option) { modifiers.insert(.option) }
+        if event.modifierFlags.contains(.control) { modifiers.insert(.control) }
+        let keyCode = Int(event.keyCode)
+
+        switch keyCode {
+        case kVK_Delete:
+            self.init(key: .delete, modifiers: modifiers)
+        case kVK_Return:
+            self.init(key: .return, modifiers: modifiers)
+        case kVK_Escape:
+            self.init(key: .escape, modifiers: modifiers)
+        case kVK_Tab:
+            self.init(key: .tab, modifiers: modifiers)
+        case kVK_Space:
+            self.init(key: .space, modifiers: modifiers)
+        case kVK_UpArrow:
+            self.init(key: .upArrow, modifiers: modifiers)
+        case kVK_DownArrow:
+            self.init(key: .downArrow, modifiers: modifiers)
+        case kVK_LeftArrow:
+            self.init(key: .leftArrow, modifiers: modifiers)
+        case kVK_RightArrow:
+            self.init(key: .rightArrow, modifiers: modifiers)
+        default:
+            guard let characters = event.charactersIgnoringModifiers?.lowercased(),
+                  let first = characters.first,
+                  !characters.isEmpty else {
+                return nil
+            }
+            self.init(key: KeyEquivalent(first), modifiers: modifiers)
+        }
     }
     
     enum CodingKeys: String, CodingKey {
@@ -212,9 +271,55 @@ class ShortcutManager: ObservableObject {
     @Published var shortcuts: [ShortcutAction: NeutronShortcut] = [:]
     
     private let userDefaultsKey = "customKeyboardShortcuts"
-    
+    private var eventMonitor: Any?
+
+    /// Actions handled by global event monitor (not SwiftUI menu commands)
+    private let monitoredActions: Set<ShortcutAction> = Set(ShortcutAction.allCases)
+
     init() {
         loadShortcuts()
+        installGlobalMonitor()
+    }
+
+    deinit {
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+
+    /// Install local event monitor that intercepts key events and triggers matching actions.
+    /// This makes custom shortcuts work dynamically without restarting.
+    private func installGlobalMonitor() {
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            guard let pressed = NeutronShortcut(event: event) else { return event }
+
+            for action in ShortcutAction.allCases {
+                guard let bound = self.shortcut(for: action) else { continue }
+                if bound == pressed {
+                    // Only intercept if user has a custom binding OR if this is a non-menu shortcut
+                    if self.shortcuts[action] != nil || !self.hasMenuCommand(for: action) {
+                        action.trigger()
+                        return nil // consume event
+                    }
+                }
+            }
+            return event
+        }
+    }
+
+    /// Whether action has a built-in SwiftUI menu command (avoid double-firing for defaults)
+    private func hasMenuCommand(for action: ShortcutAction) -> Bool {
+        switch action {
+        case .newTab, .closeTab, .newFolder, .duplicate, .selectAll,
+             .toggleHidden, .splitPaneHorizontal, .splitPaneVertical,
+             .viewAsIcons, .viewAsList, .viewAsColumns,
+             .goBack, .goForward, .goUp, .goHome, .goDesktop, .goDownloads, .goDocuments,
+             .openTerminal, .copy, .paste, .cut, .delete:
+            return true
+        case .search, .quickLook, .getInfo, .rename, .refresh, .toggleRightPane, .commandPalette:
+            return false
+        }
     }
     
     func shortcut(for action: ShortcutAction) -> NeutronShortcut? {
@@ -250,6 +355,17 @@ class ShortcutManager: ObservableObject {
     }
 }
 
+extension View {
+    @ViewBuilder
+    func applyingShortcut(_ shortcut: NeutronShortcut?) -> some View {
+        if let shortcut {
+            keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers)
+        } else {
+            self
+        }
+    }
+}
+
 // MARK: - Notification Extensions
 
 extension Notification.Name {
@@ -267,6 +383,7 @@ extension Notification.Name {
     static let toggleRightPane = Notification.Name("neutron.toggleRightPane")
     static let trashSelectedFiles = Notification.Name("neutron.trashSelectedFiles")
     static let shareSelectedFiles = Notification.Name("neutron.shareSelectedFiles")
+    static let showCommandPalette = Notification.Name("neutron.showCommandPalette")
 }
 
 // MARK: - Shortcut Recorder View
@@ -275,6 +392,7 @@ struct ShortcutRecorderView: View {
     let action: ShortcutAction
     @ObservedObject var manager = ShortcutManager.shared
     @State private var isRecording = false
+    @State private var keyMonitor: Any?
     
     var currentShortcut: NeutronShortcut? {
         manager.shortcut(for: action)
@@ -288,10 +406,10 @@ struct ShortcutRecorderView: View {
             Spacer()
             
             Button {
-                isRecording.toggle()
+                isRecording ? stopRecording() : startRecording()
             } label: {
                 if isRecording {
-                    Text("Press keys...")
+                    Text("Recording…")
                         .foregroundColor(.accentColor)
                         .frame(minWidth: 100)
                 } else if let shortcut = currentShortcut {
@@ -304,17 +422,7 @@ struct ShortcutRecorderView: View {
                 }
             }
             .buttonStyle(.bordered)
-            .onKeyPress { keyPress in
-                guard isRecording else { return .ignored }
-                
-                let newShortcut = NeutronShortcut(
-                    key: keyPress.key,
-                    modifiers: keyPress.modifiers
-                )
-                manager.setShortcut(newShortcut, for: action)
-                isRecording = false
-                return .handled
-            }
+            .onDisappear(perform: stopRecording)
             
             Button {
                 manager.resetToDefault(action: action)
@@ -325,6 +433,33 @@ struct ShortcutRecorderView: View {
             .help("Reset to default")
         }
         .padding(.vertical, 2)
+    }
+
+    private func startRecording() {
+        stopRecording()
+        isRecording = true
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if Int(event.keyCode) == kVK_Escape {
+                stopRecording()
+                return nil
+            }
+
+            guard let shortcut = NeutronShortcut(event: event) else {
+                return nil
+            }
+
+            manager.setShortcut(shortcut, for: action)
+            stopRecording()
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+        isRecording = false
     }
 }
 
@@ -382,12 +517,14 @@ struct KeyboardShortcutsSettingsView: View {
         let navigation: [ShortcutAction] = [.goBack, .goForward, .goUp, .goHome, .goDesktop, .goDownloads, .goDocuments]
         let fileOps: [ShortcutAction] = [.newFolder, .duplicate, .delete, .copy, .paste, .cut, .rename]
         let view: [ShortcutAction] = [.viewAsIcons, .viewAsList, .viewAsColumns, .toggleHidden, .toggleRightPane, .refresh]
+        let panes: [ShortcutAction] = [.splitPaneHorizontal, .splitPaneVertical]
         let tabs: [ShortcutAction] = [.newTab, .closeTab]
-        let other: [ShortcutAction] = [.search, .selectAll, .quickLook, .getInfo, .openTerminal]
+        let other: [ShortcutAction] = [.search, .selectAll, .quickLook, .getInfo, .openTerminal, .commandPalette]
         
         groups["Navigation"] = navigation.filter { filteredActions.contains($0) }
         groups["File Operations"] = fileOps.filter { filteredActions.contains($0) }
         groups["View"] = view.filter { filteredActions.contains($0) }
+        groups["Panes"] = panes.filter { filteredActions.contains($0) }
         groups["Tabs"] = tabs.filter { filteredActions.contains($0) }
         groups["Other"] = other.filter { filteredActions.contains($0) }
         

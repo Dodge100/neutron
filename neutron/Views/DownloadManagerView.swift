@@ -54,47 +54,63 @@ struct DownloadManagerPanelView: View {
         resolvedDownloadURL(from: downloadURL) != nil
     }
 
+    private var aggregateSpeed: Double {
+        runningTasks.reduce(0) { $0 + $1.currentSpeedBytesPerSecond }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             header
-            quickAddSection
-            managerControls
-            sourceLimitsSection
+            summaryStrip
 
-            if let inputError {
-                Text(inputError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
+            HStack(alignment: .top, spacing: 14) {
+                VStack(spacing: 12) {
+                    quickAddSection
+                    managerControls
+                    sourceLimitsSection
 
-            Picker("View", selection: $activeTab) {
-                Text("Queue (\(queueTasks.count))").tag(0)
-                Text("Running (\(runningTasks.count))").tag(1)
-                Text("Paused (\(downloadManager.pausedTasks.count))").tag(2)
-                Text("Done (\(downloadManager.completedTasks.count))").tag(3)
-            }
-            .pickerStyle(.segmented)
-
-            ScrollView {
-                VStack(spacing: 8) {
-                    switch activeTab {
-                    case 0:
-                        queueList
-                    case 1:
-                        runningList
-                    case 2:
-                        pausedList
-                    case 3:
-                        completedList
-                    default:
-                        EmptyView()
+                    if let inputError {
+                        Text(inputError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+                .frame(width: 340)
+
+                VStack(spacing: 12) {
+                    Picker("View", selection: $activeTab) {
+                        Text("Queue (\(queueTasks.count + failedTasks.count))").tag(0)
+                        Text("Running (\(runningTasks.count))").tag(1)
+                        Text("Paused (\(downloadManager.pausedTasks.count))").tag(2)
+                        Text("Done (\(downloadManager.completedTasks.count))").tag(3)
+                    }
+                    .pickerStyle(.segmented)
+
+                    ScrollView {
+                        VStack(spacing: 10) {
+                            switch activeTab {
+                            case 0:
+                                queueList
+                            case 1:
+                                runningList
+                            case 2:
+                                pausedList
+                            case 3:
+                                completedList
+                            default:
+                                EmptyView()
+                            }
+                        }
+                        .padding(.bottom, 4)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .frame(maxWidth: .infinity, minHeight: 420)
             }
-            .frame(minHeight: 220)
         }
         .padding()
-        .frame(minWidth: 560, minHeight: 520)
+        .frame(minWidth: 820, minHeight: 620)
         .fileImporter(
             isPresented: $showFilePicker,
             allowedContentTypes: [.folder],
@@ -118,9 +134,9 @@ struct DownloadManagerPanelView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Download Center")
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                Text("JD-style queueing, chunked downloads, resume data persistence, and per-source traffic controls")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                Text("Link grabber, grouped packages, chunked resume, and host-level traffic controls")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -128,6 +144,15 @@ struct DownloadManagerPanelView: View {
             Toggle("Clipboard auto-import", isOn: $monitorClipboard)
                 .toggleStyle(.checkbox)
                 .help("When enabled, copied direct links are added and started automatically")
+        }
+    }
+
+    private var summaryStrip: some View {
+        HStack(spacing: 10) {
+            SummaryCard(title: "Running", value: "\(runningTasks.count)", detail: speedLabel(for: aggregateSpeed), tint: .blue)
+            SummaryCard(title: "Queued", value: "\(queueTasks.count + failedTasks.count)", detail: "\(downloadManager.maxSimultaneousDownloads)x slots", tint: .orange)
+            SummaryCard(title: "Paused", value: "\(downloadManager.pausedTasks.count)", detail: "Persisted resume state", tint: .yellow)
+            SummaryCard(title: "Done", value: "\(downloadManager.completedTasks.count)", detail: selectedDestination.lastPathComponent, tint: .green)
         }
     }
 
@@ -305,46 +330,87 @@ struct DownloadManagerPanelView: View {
 
     @ViewBuilder
     private var queueList: some View {
-        ForEach(queueTasks, id: \.id) { task in
-            QueuedDownloadRow(download: task) {
-                downloadManager.cancelDownload(taskId: task.id)
+        ForEach(groupTasks(queueTasks), id: \.host) { group in
+            PackageSectionCard(title: group.host, count: group.tasks.count) {
+                ForEach(group.tasks, id: \.id) { task in
+                    QueuedDownloadRow(download: task) {
+                        downloadManager.cancelDownload(taskId: task.id)
+                    }
+                }
             }
         }
 
-        ForEach(failedTasks, id: \.id) { task in
-            FailedDownloadRow(download: task) {
-                downloadManager.retryDownload(taskId: task.id)
-            } onCancel: {
-                downloadManager.cancelDownload(taskId: task.id)
+        ForEach(groupTasks(failedTasks), id: \.host) { group in
+            PackageSectionCard(title: "\(group.host) · needs attention", count: group.tasks.count) {
+                ForEach(group.tasks, id: \.id) { task in
+                    FailedDownloadRow(download: task) {
+                        downloadManager.retryDownload(taskId: task.id)
+                    } onCancel: {
+                        downloadManager.cancelDownload(taskId: task.id)
+                    }
+                }
             }
         }
     }
 
     @ViewBuilder
     private var runningList: some View {
-        ForEach(runningTasks, id: \.id) { task in
-            ActiveDownloadRow(download: task) {
-                downloadManager.pauseDownload(taskId: task.id)
-            } onCancel: {
-                downloadManager.cancelDownload(taskId: task.id)
+        ForEach(groupTasks(runningTasks), id: \.host) { group in
+            PackageSectionCard(title: group.host, count: group.tasks.count) {
+                ForEach(group.tasks, id: \.id) { task in
+                    ActiveDownloadRow(download: task) {
+                        downloadManager.pauseDownload(taskId: task.id)
+                    } onCancel: {
+                        downloadManager.cancelDownload(taskId: task.id)
+                    }
+                }
             }
         }
     }
 
     @ViewBuilder
     private var pausedList: some View {
-        ForEach(downloadManager.pausedTasks) { record in
-            PausedDownloadRow(record: record) {
-                _ = downloadManager.resumeDownload(record: record)
+        ForEach(groupRecords(downloadManager.pausedTasks), id: \.host) { group in
+            PackageSectionCard(title: group.host, count: group.records.count) {
+                ForEach(group.records) { record in
+                    PausedDownloadRow(record: record) {
+                        _ = downloadManager.resumeDownload(record: record)
+                    }
+                }
             }
         }
     }
 
     @ViewBuilder
     private var completedList: some View {
-        ForEach(downloadManager.completedTasks) { record in
-            CompletedDownloadRow(record: record)
+        ForEach(groupRecords(downloadManager.completedTasks), id: \.host) { group in
+            PackageSectionCard(title: group.host, count: group.records.count) {
+                ForEach(group.records) { record in
+                    CompletedDownloadRow(record: record)
+                }
+            }
         }
+    }
+
+    private func speedLabel(for bytesPerSecond: Double) -> String {
+        guard bytesPerSecond > 0 else { return "Idle" }
+        return "\(ByteCountFormatter.string(fromByteCount: Int64(bytesPerSecond), countStyle: .binary))/s"
+    }
+
+    private func groupTasks(_ tasks: [DownloadTask]) -> [(host: String, tasks: [DownloadTask])] {
+        Dictionary(grouping: tasks) { $0.packageName }
+            .map { key, value in
+                (host: key, tasks: value.sorted { $0.createdAt < $1.createdAt })
+            }
+            .sorted { $0.host.localizedCompare($1.host) == .orderedAscending }
+    }
+
+    private func groupRecords(_ records: [DownloadManager.DownloadRecord]) -> [(host: String, records: [DownloadManager.DownloadRecord])] {
+        Dictionary(grouping: records) { $0.url.host ?? "General" }
+            .map { key, value in
+                (host: key, records: value.sorted { $0.completedAt > $1.completedAt })
+            }
+            .sorted { $0.host.localizedCompare($1.host) == .orderedAscending }
     }
 
     private var speedLimitDisplay: String {
@@ -538,6 +604,81 @@ struct DownloadManagerPanelView: View {
 
             counter += 1
         }
+    }
+}
+
+private struct SummaryCard: View {
+    let title: String
+    let value: String
+    let detail: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Circle()
+                    .fill(tint)
+                    .frame(width: 8, height: 8)
+            }
+
+            Text(value)
+                .font(.title3)
+                .fontWeight(.bold)
+
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(tint.opacity(0.25), lineWidth: 1)
+        }
+    }
+}
+
+private struct PackageSectionCard<Content: View>: View {
+    let title: String
+    let count: Int
+    let content: Content
+
+    init(title: String, count: Int, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.count = count
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                Spacer()
+                Text("\(count)")
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color(nsColor: .windowBackgroundColor)))
+            }
+
+            content
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .underPageBackgroundColor))
+        )
     }
 }
 

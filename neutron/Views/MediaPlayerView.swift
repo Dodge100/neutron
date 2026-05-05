@@ -361,19 +361,3 @@ struct QuickPreviewSheet: View {
         .frame(minWidth: 500, minHeight: 400)
     }
 }
-
-// MARK: - File Info with Media Duration
-
-extension FileItem {
-    var mediaDuration: String? {
-        let type = MediaType(url: path)
-        guard type == .video || type == .audio else { return nil }
-        
-        let asset = AVURLAsset(url: path)
-        let seconds = CMTimeGetSeconds(asset.duration)
-        guard seconds.isFinite && seconds > 0 else { return nil }
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
-    }
-}

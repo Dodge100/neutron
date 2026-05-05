@@ -41,6 +41,9 @@ struct ContentView: View {
     @State private var shareItems: [URL] = []
     @State private var showSharePicker: Bool = false
 
+    // Command Palette
+    @State private var showCommandPalette: Bool = false
+
     private var canGoBack: Bool { historyIndex > 0 }
     private var canGoForward: Bool { historyIndex < navigationHistory.count - 1 }
 
@@ -62,198 +65,242 @@ struct ContentView: View {
         }
     }
 
-    var body: some View {
+    private var navigationView: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(selectedPath: $selectedSidebarPath)
                 .navigationSplitViewColumnWidth(min: 160, ideal: 185, max: 220)
         } detail: {
-            VStack(spacing: 0) {
-                if isSearching {
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.secondary)
-                        TextField("Search files…", text: $searchText)
-                            .textFieldStyle(.roundedBorder)
-                        Button {
-                            searchText = ""
-                            isSearching = false
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color(nsColor: .controlBackgroundColor))
+            detailView
+        }
+    }
 
-                    if cloudWorkspace.model.unifiedSearchEnabled,
-                       !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        CloudSearchInlineResultsView(
-                            query: searchText,
-                            results: cloudSearchResults,
-                            onOpen: { url in
-                                selectedSidebarPath = url
-                                activePanePath = url
-                            }
-                        )
-                        .frame(maxHeight: 220)
-                    }
+    @ViewBuilder
+    private var detailView: some View {
+        VStack(spacing: 0) {
+            if isSearching {
+                searchHeader
+            }
 
-                    Divider()
+            DualPaneView(
+                viewMode: $viewMode,
+                showHiddenFiles: $showHiddenFiles,
+                initialPath: selectedSidebarPath ?? resolvedDefaultPath,
+                selectedSidebarPath: $selectedSidebarPath,
+                activePanePath: $activePanePath,
+                searchText: searchText
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var searchHeader: some View {
+        HStack {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.secondary)
+            TextField("Search files…", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+            Button {
+                searchText = ""
+                isSearching = false
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .controlBackgroundColor))
+
+        if cloudWorkspace.model.unifiedSearchEnabled,
+           !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            CloudSearchInlineResultsView(
+                query: searchText,
+                results: cloudSearchResults,
+                onOpen: { url in
+                    selectedSidebarPath = url
+                    activePanePath = url
                 }
+            )
+            .frame(maxHeight: 220)
+        }
 
-                DualPaneView(
-                    viewMode: $viewMode,
-                    showHiddenFiles: $showHiddenFiles,
-                    initialPath: selectedSidebarPath ?? resolvedDefaultPath,
-                    selectedSidebarPath: $selectedSidebarPath,
-                    activePanePath: $activePanePath,
-                    searchText: searchText
+        Divider()
+    }
+
+    @ToolbarContentBuilder
+    private var mainToolbar: some ToolbarContent {
+        ToolbarItem(id: "nav", placement: .navigation) {
+            Section {
+                Button("Back", systemImage: "chevron.left") {
+                    goBack()
+                }
+                .disabled(!canGoBack)
+
+                Button("Forward", systemImage: "chevron.right") {
+                    goForward()
+                }
+                .disabled(!canGoForward)
+            }
+        }
+
+        ToolbarItem(id: "space") {
+            Spacer()
+        }
+        ToolbarItem(id: "toggleHidden") {
+            Button {
+                showHiddenFiles.toggle()
+            } label: {
+                Image(systemName: showHiddenFiles ? "eye.fill" : "eye")
+            }
+            .help("Show Hidden Files")
+        }
+        ToolbarItem(id: "newFolder") {
+            Button("New Folder", systemImage: "folder.badge.plus") {
+                newFolderName = ""
+                showNewFolderAlert = true
+            }
+        }
+        ToolbarItem(id: "delete") {
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                NotificationCenter.default.post(
+                    name: .trashSelectedFiles,
+                    object: nil,
+                    userInfo: ["directory": activePanePath]
                 )
             }
         }
-        .frame(minWidth: 900, minHeight: 620)
-        .toolbar(removing: .sidebarToggle)
-        .environmentObject(fileOps)
-        .onChange(of: activePanePath) { _, newPath in
-            pushHistory(newPath)
-        }
-        .onChange(of: selectedSidebarPath) { _, newPath in
-            if let path = newPath {
-                pushHistory(path)
+        ToolbarItem(id: "search") {
+            Button("Search", systemImage: "magnifyingglass") {
+                isSearching.toggle()
+                if !isSearching {
+                    searchText = ""
+                }
             }
         }
-        .onChange(of: searchText) { _, _ in
-            refreshCloudSearchResults()
+        ToolbarItem(id: "share") {
+            Button("Share", systemImage: "square.and.arrow.up") {
+                NotificationCenter.default.post(
+                    name: .shareSelectedFiles,
+                    object: nil
+                )
+            }
         }
-        .onChange(of: isSearching) { _, _ in
-            refreshCloudSearchResults()
+        ToolbarItem(id: "transfers") {
+            Button("Transfers", systemImage: "arrow.down.circle") {
+                openWindow(id: "downloads")
+            }
+            .help("Open Transfers")
         }
-        .toolbar(id: "toolbar") {
-            ToolbarItem(id: "nav", placement: .navigation) {
-                Section {
-                    Button("Back", systemImage: "chevron.left") {
-                        goBack()
-                    }
-                    .disabled(!canGoBack)
-                    .keyboardShortcut("[", modifiers: .command)
+    }
 
-                    Button("Forward", systemImage: "chevron.right") {
-                        goForward()
-                    }
-                    .disabled(!canGoForward)
-                    .keyboardShortcut("]", modifiers: .command)
+    private var scaffold: some View {
+        navigationView
+            .frame(minWidth: 900, minHeight: 620)
+            .toolbar(removing: .sidebarToggle)
+            .environmentObject(fileOps)
+            .toolbar { mainToolbar }
+            .sheet(isPresented: $showNewFolderAlert) {
+                NewFolderSheet(
+                    folderName: $newFolderName,
+                    isPresented: $showNewFolderAlert
+                ) { name in
+                    _ = fileOps.createNewFolder(in: activePanePath, name: name)
                 }
             }
-            
-            ToolbarItem(id: "space") {
-                Spacer()
-            }
-            ToolbarItem(id: "toggleHidden") {
-                Toggle(isOn: $showHiddenFiles) {
-                    Image(systemName: "eye")
-                }
-                .help("Show Hidden Files")
-            }
-            ToolbarItem(id: "newFolder") {
-                Button("New Folder", systemImage: "folder.badge.plus") {
-                    newFolderName = ""
-                    showNewFolderAlert = true
-                }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
-            }
-            ToolbarItem(id: "delete") {
-                Button("Delete", systemImage: "trash", role: .destructive) {
-                    NotificationCenter.default.post(
-                        name: .trashSelectedFiles,
-                        object: nil,
-                        userInfo: ["directory": activePanePath]
-                    )
-                }
-                .keyboardShortcut(.delete, modifiers: .command)
-            }
-            ToolbarItem(id: "search") {
-                Button("Search", systemImage: "magnifyingglass") {
-                    isSearching.toggle()
-                    if !isSearching {
-                        searchText = ""
-                    }
-                }
-                .keyboardShortcut("f", modifiers: .command)
-            }
-            ToolbarItem(id: "share") {
-                Button("Share", systemImage: "square.and.arrow.up") {
-                    NotificationCenter.default.post(
-                        name: .shareSelectedFiles,
-                        object: nil
-                    )
-                }
-            }
-            ToolbarItem(id: "transfers") {
-                Button("Transfers", systemImage: "arrow.down.circle") {
-                    openWindow(id: "downloads")
-                }
-                .help("Open Transfers")
-            }
-        }
-        .sheet(isPresented: $showNewFolderAlert) {
-            NewFolderSheet(
-                folderName: $newFolderName,
-                isPresented: $showNewFolderAlert
-            ) { name in
-                _ = fileOps.createNewFolder(in: activePanePath, name: name)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .createNewFolder)) { _ in
-            newFolderName = ""
-            showNewFolderAlert = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .navigateBack)) { _ in
-            goBack()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .navigateForward)) { _ in
-            goForward()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .goHome)) { _ in
-            selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .goDesktop)) { _ in
-            selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .goDownloads)) { _ in
-            selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .goDocuments)) { _ in
-            selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .showDownloadsPanel)) { notification in
-            handleTransferWindowRequest(notification, replayName: nil)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .showVideoDownload)) { notification in
-            handleTransferWindowRequest(notification, replayName: .showVideoDownload)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .showTorrentMagnet)) { notification in
-            handleTransferWindowRequest(notification, replayName: .showTorrentMagnet)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .showTorrentFilePicker)) { notification in
-            handleTransferWindowRequest(notification, replayName: .showTorrentFilePicker)
-        }
-        .onAppear {
-            showHiddenFiles = showHiddenByDefault
-            let initialPath = resolvedDefaultPath
-            selectedSidebarPath = initialPath
-            activePanePath = initialPath
-            if navigationHistory.isEmpty {
+            .onAppear {
+                showHiddenFiles = showHiddenByDefault
+                let initialPath = resolvedDefaultPath
+                selectedSidebarPath = initialPath
+                activePanePath = initialPath
                 navigationHistory = [initialPath]
                 historyIndex = 0
-            } else {
-                navigationHistory = [initialPath]
-                historyIndex = 0
+                refreshCloudSearchResults()
             }
-            refreshCloudSearchResults()
-        }
+    }
 
+    private func bindHandlers<Content: View>(to view: Content) -> some View {
+        view
+            .onChange(of: activePanePath) { _, newPath in
+                pushHistory(newPath)
+            }
+            .onChange(of: selectedSidebarPath) { _, newPath in
+                if let path = newPath {
+                    pushHistory(path)
+                }
+            }
+            .onChange(of: searchText) { _, _ in
+                refreshCloudSearchResults()
+            }
+            .onChange(of: isSearching) { _, _ in
+                refreshCloudSearchResults()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .createNewFolder)) { _ in
+                newFolderName = ""
+                showNewFolderAlert = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .navigateBack)) { _ in
+                goBack()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .navigateForward)) { _ in
+                goForward()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleSearch)) { _ in
+                isSearching.toggle()
+                if !isSearching {
+                    searchText = ""
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .goHome)) { _ in
+                selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .goDesktop)) { _ in
+                selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .goDownloads)) { _ in
+                selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .goDocuments)) { _ in
+                selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showDownloadsPanel)) { notification in
+                handleTransferWindowRequest(notification, replayName: nil)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showVideoDownload)) { notification in
+                handleTransferWindowRequest(notification, replayName: .showVideoDownload)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showTorrentMagnet)) { notification in
+                handleTransferWindowRequest(notification, replayName: .showTorrentMagnet)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showTorrentFilePicker)) { notification in
+                handleTransferWindowRequest(notification, replayName: .showTorrentFilePicker)
+            }
+    }
+
+    var body: some View {
+        bindHandlers(to: scaffold)
+            .overlay {
+                if showCommandPalette {
+                    ZStack {
+                        Color.black.opacity(0.2)
+                            .ignoresSafeArea()
+                            .onTapGesture {
+                                showCommandPalette = false
+                            }
+
+                        VStack {
+                            CommandPaletteView(isPresented: $showCommandPalette)
+                                .padding(.top, 60)
+                            Spacer()
+                        }
+                    }
+                    .transition(.opacity)
+                    .animation(.easeInOut(duration: 0.15), value: showCommandPalette)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .showCommandPalette)) { _ in
+                showCommandPalette.toggle()
+            }
     }
 
     // MARK: - Navigation History

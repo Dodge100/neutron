@@ -820,8 +820,10 @@ final class CloudWorkspaceStore: ObservableObject {
                 + [home.appendingPathComponent("Box")]
         case .iCloudDrive:
             candidates = [documents.appendingPathComponent("com~apple~CloudDocs")]
-        case .awsS3:
+        case .awsS3, .backblazeB2, .rackspaceCloudfiles:
             candidates = Self.urls(in: cloudStorage, matchingPrefixes: ["S3", "AWS", "Amazon S3"])
+        case .sftp, .ftp, .webDav, .smb, .afp, .nfs:
+            candidates = []
         }
 
         var seen = Set<String>()
@@ -838,9 +840,9 @@ final class CloudWorkspaceStore: ObservableObject {
             let remoteConnected: Bool = switch account.provider {
             case .googleDrive, .dropbox, .oneDrive, .box:
                 credentialStore.loadOAuthCredential(for: account.id) != nil
-            case .awsS3:
+            case .awsS3, .backblazeB2, .rackspaceCloudfiles:
                 credentialStore.loadS3Credential(for: account.id) != nil
-            case .iCloudDrive:
+            case .iCloudDrive, .sftp, .ftp, .webDav, .smb, .afp, .nfs:
                 false
             }
             model.accounts[index].isConnected = localConnected || remoteConnected
@@ -1438,7 +1440,7 @@ struct CloudUnifiedSearchResultsView: View {
                 ContentUnavailableView(
                     "No Cloud Results",
                     systemImage: "magnifyingglass",
-                    description: Text("No cloud items matched "\(query)".")
+                    description: Text("No cloud items matched \"\(query)\".")
                 )
             } else {
                 List(results) { result in

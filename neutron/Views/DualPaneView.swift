@@ -104,17 +104,20 @@ struct PaneState: Identifiable, Equatable {
         selectedTabId = tab.id
     }
 
-    mutating func closeSelectedTab() {
+    mutating func closeSelectedTab() -> Bool {
         guard let selectedTabId,
-              let index = tabs.firstIndex(where: { $0.id == selectedTabId }) else { return }
+              let index = tabs.firstIndex(where: { $0.id == selectedTabId }) else { return false }
 
         tabs.remove(at: index)
 
         if tabs.isEmpty {
-            addTab()
+            self.selectedTabId = nil
+            return true
         } else {
             self.selectedTabId = tabs[min(index, tabs.count - 1)].id
         }
+
+        return false
     }
 
     mutating func selectTab(_ tab: FileTab) {
@@ -271,41 +274,48 @@ struct DualPaneView: View {
             }
 
         let commandView = tabView
-            .onReceive(NotificationCenter.default.publisher(for: .duplicateSelectedFiles)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .duplicateSelectedFiles)) { notification in
+                guard notification.object == nil else { return }
                 postFocusedPaneCommand(.duplicateSelectedFiles)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .copySelectedFiles)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .copySelectedFiles)) { notification in
+                guard notification.object == nil else { return }
                 postFocusedPaneCommand(.copySelectedFiles)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .cutSelectedFiles)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .cutSelectedFiles)) { notification in
+                guard notification.object == nil else { return }
                 postFocusedPaneCommand(.cutSelectedFiles)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .pasteFiles)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .pasteFiles)) { notification in
+                guard notification.object == nil else { return }
                 postFocusedPaneCommand(.pasteFiles)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .selectAllFiles)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .selectAllFiles)) { notification in
+                guard notification.object == nil else { return }
                 postFocusedPaneCommand(.selectAllFiles)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .quickLookSelected)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .quickLookSelected)) { notification in
+                guard notification.object == nil else { return }
                 postFocusedPaneCommand(.quickLookSelected)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .getInfoSelected)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .getInfoSelected)) { notification in
+                guard notification.object == nil else { return }
                 postFocusedPaneCommand(.getInfoSelected)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .renameSelected)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .renameSelected)) { notification in
+                guard notification.object == nil else { return }
                 postFocusedPaneCommand(.renameSelected)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .refreshFiles)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .refreshFiles)) { notification in
+                guard notification.object == nil else { return }
                 postFocusedPaneCommand(.refreshFiles)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .openInTerminal)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .openInTerminal)) { notification in
+                guard notification.object == nil else { return }
                 postFocusedPaneCommand(.openInTerminal)
             }
 
         return commandView
-            .onReceive(NotificationCenter.default.publisher(for: .toggleSearch)) { _ in
-                NotificationCenter.default.post(name: .toggleSearch, object: nil)
-            }
             .onReceive(NotificationCenter.default.publisher(for: .toggleRightPane)) { _ in
                 focusAdjacentPane()
             }
@@ -341,13 +351,12 @@ struct DualPaneView: View {
             let maxPreviewWidth: CGFloat = 460
 
             let totalWidth = proxy.size.width
-            let previewRequested = sharedPreviewItem != nil
             let availablePreviewMax = max(0, totalWidth - minMainWidth)
             let effectivePreviewWidth = min(
                 max(CGFloat(previewColumnWidth), minPreviewWidth),
                 min(maxPreviewWidth, availablePreviewMax)
             )
-            let canShowPreview = previewRequested && availablePreviewMax >= minPreviewWidth
+            let canShowPreview = availablePreviewMax >= minPreviewWidth
 
             HStack(spacing: 0) {
                 PaneWorkspaceNodeView(
@@ -371,13 +380,15 @@ struct DualPaneView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if canShowPreview, let sharedPreviewItem {
+                if canShowPreview {
                     Divider()
-                    FinderPreviewColumn(file: sharedPreviewItem)
-                        .frame(width: effectivePreviewWidth)
-                        .onAppear {
-                            previewColumnWidth = Double(effectivePreviewWidth)
-                        }
+                    if let previewItem = paneStates[focusedPaneID ?? UUID()]?.previewItem {
+                        FinderPreviewColumn(file: previewItem)
+                            .frame(width: effectivePreviewWidth)
+                            .onAppear {
+                                previewColumnWidth = Double(effectivePreviewWidth)
+                            }
+                    }
                 }
             }
             .animation(.easeInOut(duration: 0.16), value: canShowPreview)
@@ -437,6 +448,21 @@ struct DualPaneView: View {
             }
             .help("Manage Panes")
         }
+
+        ToolbarItemGroup(placement: .primaryAction) {
+            ForEach(FileBrowserView.ViewMode.allCases, id: \.self) { mode in
+                Button {
+                    if let focusedPaneID {
+                        handleViewModeChange(for: focusedPaneID, to: mode)
+                    }
+                } label: {
+                    Image(systemName: mode.icon)
+                        .symbolVariant(focusedPane?.viewMode == mode ? .fill : .none)
+                }
+                .disabled(focusedPaneID == nil)
+                .help("\(mode.rawValue) View")
+            }
+        }
     }
 
     private func handleViewModeChange(for paneID: UUID, to newMode: FileBrowserView.ViewMode) {
@@ -478,10 +504,27 @@ struct DualPaneView: View {
         syncFocusedPaneState()
     }
 
-    private func handleCloseTab() {
+private func handleCloseTab() {
         guard let focusedPaneID else { return }
-        paneStates[focusedPaneID]?.closeSelectedTab()
-        paneStates[focusedPaneID]?.previewItem = nil
+ 
+        guard var pane = paneStates[focusedPaneID] else { return }
+ 
+        if pane.tabs.count <= 1 {
+            if paneStates.count > 1 {
+                removePane(focusedPaneID)
+            } else {
+                let homePath = FileManager.default.homeDirectoryForCurrentUser
+                pane.tabs = [FileTab(title: VirtualLocation.displayName(for: homePath), path: homePath)]
+                pane.selectedTabId = pane.tabs.first?.id
+                paneStates[focusedPaneID] = pane
+                navigatePane(focusedPaneID, to: homePath)
+            }
+            return
+        }
+ 
+        _ = pane.closeSelectedTab()
+        pane.previewItem = nil
+        paneStates[focusedPaneID] = pane
         syncFocusedPaneState()
     }
 
@@ -580,12 +623,13 @@ struct DualPaneView: View {
 
         sourcePane.tabs.remove(at: sourceIndex)
         if sourcePane.tabs.isEmpty {
-            sourcePane.addTab(path: FileManager.default.homeDirectoryForCurrentUser)
-        }
-        if sourcePane.selectedTabId == movedTab.id {
+            paneStates.removeValue(forKey: payload.sourcePaneID)
+            layoutTree = removingPane(from: layoutTree, paneID: payload.sourcePaneID) ?? layoutTree
+        } else if sourcePane.selectedTabId == movedTab.id {
             sourcePane.selectedTabId = sourcePane.tabs.first?.id
+            sourcePane.previewItem = nil
+            paneStates[payload.sourcePaneID] = sourcePane
         }
-        sourcePane.previewItem = nil
 
         var insertionIndex = targetIndex ?? targetPane.tabs.count
         insertionIndex = max(0, min(insertionIndex, targetPane.tabs.count))
@@ -593,11 +637,14 @@ struct DualPaneView: View {
         targetPane.selectedTabId = movedTab.id
         targetPane.previewItem = nil
 
-        paneStates[payload.sourcePaneID] = sourcePane
         paneStates[targetPaneID] = targetPane
         focusedPaneID = targetPaneID
         syncFocusedPaneState()
         return true
+    }
+
+    private func closeFocusedWindow() {
+        NSApp.keyWindow?.performClose(nil)
     }
 
     private func otherPaneID() -> UUID? {
@@ -928,13 +975,13 @@ struct PaneSplitContainer: View {
             let totalSize = axis == .horizontal ? geometry.size.width : geometry.size.height
             let dividerCount = CGFloat(max(children.count - 1, 0))
             let dividerThickness: CGFloat = 6
-            let availableSize = totalSize - dividerCount * dividerThickness
+            let availableSize = max(totalSize - dividerCount * dividerThickness, 1)
 
             if axis == .horizontal {
                 HStack(spacing: 0) {
                     ForEach(Array(children.indices), id: \.self) { index in
                         children[index]
-                            .frame(width: availableSize * currentRatios[index])
+                            .frame(width: max(availableSize * currentRatios[index], 60))
 
                         if index < children.count - 1 {
                             PaneDividerView(
@@ -952,7 +999,7 @@ struct PaneSplitContainer: View {
                 VStack(spacing: 0) {
                     ForEach(Array(children.indices), id: \.self) { index in
                         children[index]
-                            .frame(height: availableSize * currentRatios[index])
+                            .frame(height: max(availableSize * currentRatios[index], 60))
 
                         if index < children.count - 1 {
                             PaneDividerView(
@@ -968,8 +1015,9 @@ struct PaneSplitContainer: View {
                 }
             }
         }
-        .onChange(of: children.count) { _, _ in
-            resetRatios()
+        .onChange(of: children.count) { _, newCount in
+            let count = max(newCount, 1)
+            ratios = Array(repeating: 1.0 / CGFloat(count), count: count)
         }
     }
 
@@ -1089,8 +1137,14 @@ struct WorkspacePaneContainerView: View {
     var onClosePane: () -> Void
     var onPreviewSelectionChange: (FilePreviewItem?) -> Void
     var onDropTab: (TabDragPayload, Int?) -> Bool
+    @EnvironmentObject private var fileOps: FileOperations
 
     @State private var fileBrowserCommand: FileBrowserCommand?
+    @State private var paneSearchText: String = ""
+    @State private var paneSearchActive: Bool = false
+    @State private var recursiveSearch: Bool = false
+    @State private var recursiveResults: [FileItem] = []
+    @State private var recursiveSearchTask: Task<Void, Never>?
 
     var body: some View {
         let baseView = paneContainer
@@ -1153,10 +1207,43 @@ struct WorkspacePaneContainerView: View {
                 onNewTab: {
                     addNewTab()
                 },
-                onDropTab: onDropTab
+                onDropTab: onDropTab,
+                onDropFiles: handleDroppedFiles(_:onto:)
             )
 
             Divider()
+
+            // Per-pane search bar
+            if paneSearchActive {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField("Search in pane…", text: $paneSearchText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            if recursiveSearch {
+                                performRecursiveSearch()
+                            }
+                        }
+                    Toggle("Recursive", isOn: $recursiveSearch)
+                        .toggleStyle(.checkbox)
+                        .help("Search in subdirectories")
+                    Button {
+                        paneSearchText = ""
+                        paneSearchActive = false
+                        recursiveResults = []
+                        recursiveSearchTask?.cancel()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color(nsColor: .controlBackgroundColor))
+                Divider()
+            }
 
             if let selectedTab = selectedTab {
                 tabContent(for: selectedTab)
@@ -1177,6 +1264,19 @@ struct WorkspacePaneContainerView: View {
         .onChange(of: paneState.tabs) { _, _ in
             ensureValidSelection()
         }
+        .onChange(of: paneSearchText) { _, _ in
+            // Debounce recursive search
+            if recursiveSearch && !paneSearchText.isEmpty {
+                recursiveSearchTask?.cancel()
+                recursiveSearchTask = Task {
+                    try? await Task.sleep(for: .milliseconds(300))
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run { performRecursiveSearch() }
+                }
+            } else {
+                recursiveResults = []
+            }
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 4)
                 .stroke(isFocused ? Color(nsColor: .controlAccentColor).opacity(0.5) : Color.clear, lineWidth: 1)
@@ -1193,10 +1293,11 @@ struct WorkspacePaneContainerView: View {
 
     @ViewBuilder
     private func tabContent(for tab: FileTab) -> some View {
+        let effectiveSearch = paneSearchActive ? paneSearchText : searchText
         if isCloudTab(tab) {
             CloudPaneView(
                 currentPath: pathBinding(for: tab.id),
-                searchText: searchText,
+                searchText: effectiveSearch,
                 workspace: cloudWorkspace
             )
             .onAppear {
@@ -1215,7 +1316,7 @@ struct WorkspacePaneContainerView: View {
                     }
                 ),
                 showHiddenFiles: $showHiddenFiles,
-                searchText: searchText,
+                searchText: effectiveSearch,
                 showsPathBar: pathBarEnabled,
                 showsStatusBar: statusBarEnabled,
                 externalCommand: paneState.selectedTabId == tab.id ? externalFileBrowserCommand : nil,
@@ -1259,12 +1360,19 @@ struct WorkspacePaneContainerView: View {
     }
 
     private func closeTab(_ tab: FileTab) {
+        if paneState.tabs.count == 1 {
+            if canClosePane {
+                onClosePane()
+            } else {
+                NSApp.keyWindow?.performClose(nil)
+            }
+            return
+        }
+
         guard let index = paneState.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
         paneState.tabs.remove(at: index)
 
-        if paneState.tabs.isEmpty {
-            paneState.addTab(path: paneState.currentPath)
-        } else if paneState.selectedTabId == tab.id {
+        if paneState.selectedTabId == tab.id {
             paneState.selectedTabId = paneState.tabs[min(index, paneState.tabs.count - 1)].id
         }
 
@@ -1326,6 +1434,52 @@ struct WorkspacePaneContainerView: View {
             fileBrowserCommand = command
         }
     }
+
+    private func handleDroppedFiles(_ urls: [URL], onto tab: FileTab) -> Bool {
+        guard tab.path.isFileURL else { return false }
+        guard FileManager.default.fileExists(atPath: tab.path.path) else { return false }
+        guard fileOps.moveFiles(urls: urls, to: tab.path) else { return false }
+
+        paneState.selectedTabId = tab.id
+        onFocus()
+        updateSelectionStateForCurrentTab()
+        return true
+    }
+
+    private func performRecursiveSearch() {
+        let query = paneSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            recursiveResults = []
+            return
+        }
+
+        let root = paneState.currentPath
+        Task.detached(priority: .userInitiated) {
+            let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .creationDateKey, .tagNamesKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            )
+
+            var found: [FileItem] = []
+            var count = 0
+
+            while let url = enumerator?.nextObject() as? URL {
+                count += 1
+                if count > 10000 { break }
+
+                if url.lastPathComponent.localizedCaseInsensitiveContains(query) {
+                    if let item = FileItem.fromURL(url) {
+                        found.append(item)
+                    }
+                }
+            }
+
+            await MainActor.run {
+                self.recursiveResults = found
+            }
+        }
+    }
 }
 
 private struct PaneTabStripView: View {
@@ -1336,6 +1490,7 @@ private struct PaneTabStripView: View {
     var onClose: (FileTab) -> Void
     var onNewTab: () -> Void
     var onDropTab: (TabDragPayload, Int?) -> Bool
+    var onDropFiles: ([URL], FileTab) -> Bool
 
     @State private var dropIndex: Int?
 
@@ -1361,6 +1516,9 @@ private struct PaneTabStripView: View {
                             },
                             onClose: {
                                 onClose(tab)
+                            },
+                            onDropFiles: { urls in
+                                onDropFiles(urls, tab)
                             }
                         )
                         .draggable(payload.encoded() ?? "") {
@@ -1429,8 +1587,10 @@ private struct PaneTabStripItem: View {
     var isDropTargeted: Bool = false
     var onSelect: () -> Void
     var onClose: () -> Void
+    var onDropFiles: ([URL]) -> Bool = { _ in false }
 
     @State private var hovering = false
+    @State private var isFileDropTargeted = false
 
     private var tabFill: Color {
         if isSelected {
@@ -1474,8 +1634,23 @@ private struct PaneTabStripItem: View {
                     .stroke(Color(nsColor: .controlAccentColor), style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
             }
         }
+        .overlay {
+            if isFileDropTargeted {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color(nsColor: .controlAccentColor).opacity(0.14))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(Color(nsColor: .controlAccentColor), lineWidth: 1.2)
+                    }
+            }
+        }
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .onTapGesture(perform: onSelect)
+        .dropDestination(for: URL.self) { urls, _ in
+            onDropFiles(urls)
+        } isTargeted: { targeting in
+            isFileDropTargeted = targeting
+        }
         .onHover { hovering in
             self.hovering = hovering
         }

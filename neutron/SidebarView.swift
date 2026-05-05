@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 struct SidebarView: View {
     @Binding var selectedPath: URL?
@@ -13,6 +14,7 @@ struct SidebarView: View {
     @State private var externalVolumes: [URL] = []
     @State private var finderTags: [FinderTag] = []
     @StateObject private var cloudWorkspace = CloudWorkspaceStore.shared
+    @StateObject private var favoritesStore = FavoritesStore.shared
     @AppStorage("showFavorites") private var showFavorites = true
     @AppStorage("showiCloud") private var showiCloud = true
     @AppStorage("showLocations") private var showLocations = true
@@ -28,7 +30,7 @@ struct SidebarView: View {
     }
 
     private var favoriteItems: [(label: String, systemImage: String, url: URL)] {
-        [
+        var items: [(label: String, systemImage: String, url: URL)] = [
             ("Recents", "clock", VirtualLocation.recentsURL),
             ("Applications", "app.dashed", URL(fileURLWithPath: "/Applications")),
             ("Desktop", "desktopcomputer", homeDir.appendingPathComponent("Desktop")),
@@ -41,6 +43,16 @@ struct SidebarView: View {
         ].filter { item in
             VirtualLocation.isRecents(item.url) || FileManager.default.fileExists(atPath: item.url.path)
         }
+
+        // Append user custom favorites
+        for fav in favoritesStore.favorites {
+            let exists = FileManager.default.fileExists(atPath: fav.path)
+            guard exists else { continue }
+            guard !items.contains(where: { $0.url == fav }) else { continue }
+            items.append((fav.lastPathComponent, "folder", fav))
+        }
+
+        return items
     }
 
     private var hasICloudDrive: Bool {
@@ -55,7 +67,30 @@ struct SidebarView: View {
                 ForEach(favoriteItems, id: \.url) { item in
                     Label(item.label, systemImage: item.systemImage)
                         .tag(item.url)
+                        .contextMenu {
+                            if favoritesStore.isFavorite(item.url) {
+                                Button("Remove from Favorites") {
+                                    favoritesStore.removeFavorite(item.url)
+                                }
+                            }
+                            Button("Show in Finder") {
+                                if item.url.isFileURL {
+                                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: item.url.path)
+                                }
+                            }
+                        }
                 }
+
+                // Drop target to add favorites
+            }
+            .dropDestination(for: URL.self) { urls, _ in
+                for url in urls {
+                    var isDir: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                        favoritesStore.addFavorite(url)
+                    }
+                }
+                return !urls.isEmpty
             }
             }
 
@@ -164,5 +199,44 @@ struct SidebarView: View {
                 self.finderTags = tags
             }
         }
+    }
+}
+
+// MARK: - FavoritesStore
+
+class FavoritesStore: ObservableObject {
+    static let shared = FavoritesStore()
+
+    @Published var favorites: [URL] = []
+
+    private let key = "userFavoritePaths"
+
+    init() {
+        load()
+    }
+
+    func addFavorite(_ url: URL) {
+        guard !favorites.contains(url) else { return }
+        favorites.append(url)
+        save()
+    }
+
+    func removeFavorite(_ url: URL) {
+        favorites.removeAll { $0 == url }
+        save()
+    }
+
+    func isFavorite(_ url: URL) -> Bool {
+        favorites.contains(url)
+    }
+
+    private func save() {
+        let paths = favorites.map(\.path)
+        UserDefaults.standard.set(paths, forKey: key)
+    }
+
+    private func load() {
+        guard let paths = UserDefaults.standard.stringArray(forKey: key) else { return }
+        favorites = paths.map { URL(fileURLWithPath: $0) }
     }
 }

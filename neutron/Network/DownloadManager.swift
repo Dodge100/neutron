@@ -83,6 +83,22 @@ final class DownloadManager: NSObject, ObservableObject {
         var sourceConnectionLimits: [String: Int]
     }
 
+    struct PersistedSegment: Codable {
+        let index: Int
+        let lowerBound: Int64
+        let upperBound: Int64
+        let tempFileName: String?
+        let completed: Bool
+    }
+
+    struct SegmentResumeManifest: Codable {
+        let taskID: UUID
+        let url: URL
+        let destination: URL
+        let totalBytes: Int64
+        let segments: [PersistedSegment]
+    }
+
     struct SegmentDownload {
         let index: Int
         let range: ClosedRange<Int64>
@@ -152,6 +168,7 @@ final class DownloadManager: NSObject, ObservableObject {
     private let minimumSegmentSize: Int64 = 2 * 1024 * 1024
 
     private var queuedResumeData: [UUID: Data] = [:]
+    private var queuedSegmentManifests: [UUID: SegmentResumeManifest] = [:]
     private var isThrottling = false
     private var throttledSources: Set<String> = []
 
@@ -212,7 +229,9 @@ final class DownloadManager: NSObject, ObservableObject {
 
         activeTasks[task.id] = active
 
-        if let resumeData = loadResumeData(for: record.id) {
+        if let manifest = loadSegmentManifest(for: record.id) {
+            queuedSegmentManifests[task.id] = manifest
+        } else if let resumeData = loadResumeData(for: record.id) {
             queuedResumeData[task.id] = resumeData
         }
 
@@ -238,9 +257,16 @@ final class DownloadManager: NSObject, ObservableObject {
             active.segments.values.forEach { $0.urlTask?.cancel() }
             active.task.status = .paused
             active.task.resumeData = nil
+            var pausedActive = active
+            pausedActive.segments = pausedActive.segments.mapValues { segment in
+                var updated = segment
+                updated.urlTask = nil
+                updated.bytesWritten = segment.completed ? (segment.range.upperBound - segment.range.lowerBound + 1) : 0
+                return updated
+            }
+            saveSegmentManifest(makeSegmentManifest(from: pausedActive))
             savePausedTask(makePausedRecord(from: active.task))
             activeTasks.removeValue(forKey: taskId)
-            cleanupTemporaryArtifacts(for: taskId)
             scheduleNextDownloads()
             return
         }
@@ -267,8 +293,10 @@ final class DownloadManager: NSObject, ObservableObject {
 
         activeTasks.removeValue(forKey: taskId)
         queuedResumeData.removeValue(forKey: taskId)
+        queuedSegmentManifests.removeValue(forKey: taskId)
         deleteResumeData(for: taskId)
         removePausedTask(taskId)
+        deleteSegmentManifest(for: taskId)
         cleanupTemporaryArtifacts(for: taskId)
 
         DispatchQueue.main.async {
@@ -353,7 +381,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     func sourceConnectionLimit(for source: String) -> Int {
-        sourceConnectionLimits[normalizedSourceKey(source)] ?? maxSimultaneousDownloads
+        sourceConnectionLimits[normalizedSourceKey(source)] ?? max(maxSimultaneousDownloads, connectionsPerDownload)
     }
 
     func knownSources() -> [String] {
@@ -389,6 +417,20 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func startNetworkTask(for task: DownloadTask) {
+        if let manifest = queuedSegmentManifests.removeValue(forKey: task.id) {
+            startSegmentedDownloadTask(for: task, totalBytes: manifest.totalBytes, manifest: manifest)
+            return
+        }
+
+        if let active = activeTasks[task.id], active.isSegmented, !active.segments.isEmpty {
+            startSegmentedDownloadTask(
+                for: task,
+                totalBytes: max(task.totalBytes, active.task.totalBytes),
+                manifest: makeSegmentManifest(from: active)
+            )
+            return
+        }
+
         if let resumeData = queuedResumeData.removeValue(forKey: task.id) {
             startSingleDownloadTask(for: task, resumeData: resumeData)
             return
@@ -441,22 +483,22 @@ final class DownloadManager: NSObject, ObservableObject {
         urlTask.resume()
     }
 
-    private func startSegmentedDownloadTask(for task: DownloadTask, totalBytes: Int64) {
+    private func startSegmentedDownloadTask(
+        for task: DownloadTask,
+        totalBytes: Int64,
+        manifest: SegmentResumeManifest? = nil
+    ) {
         guard var active = activeTasks[task.id] else { return }
 
-        let source = sourceKey(for: task.url)
-        let sourceLimit = sourceConnectionLimit(for: source)
-        let sourceInUse = activeNetworkConnections(forSource: source)
-        let sourceFree = max(1, sourceLimit - sourceInUse)
-        let maxSegmentsBySize = Int(max(1, totalBytes / minimumSegmentSize))
-        let segmentCount = max(1, min(connectionsPerDownload, min(sourceFree, maxSegmentsBySize)))
-        guard segmentCount > 1 else {
+        let resolvedTotalBytes = manifest?.totalBytes ?? totalBytes
+        let ranges = manifest?.segments.sorted { $0.index < $1.index }.map { $0.lowerBound...$0.upperBound }
+            ?? buildRanges(totalBytes: resolvedTotalBytes, chunkSize: preferredChunkSize(for: resolvedTotalBytes))
+        guard ranges.count > 1 else {
             startSingleDownloadTask(for: task, resumeData: nil)
             return
         }
 
-        task.totalBytes = totalBytes
-        task.downloadedBytes = 0
+        task.totalBytes = resolvedTotalBytes
         task.error = nil
         task.status = .downloading
 
@@ -471,46 +513,88 @@ final class DownloadManager: NSObject, ObservableObject {
         active.lastSpeedCheck = Date()
         active.bytesAtLastCheck = 0
 
-        let ranges = buildRanges(totalBytes: totalBytes, parts: segmentCount)
-        for (index, range) in ranges.enumerated() {
-            var request = URLRequest(url: task.url)
-            request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)", forHTTPHeaderField: "Range")
-
-            let segmentTask = urlSession.downloadTask(with: request)
-            segmentTask.taskDescription = "segment|\(task.id.uuidString)|\(index)"
-
-            let segment = SegmentDownload(
-                index: index,
-                range: range,
-                urlTask: segmentTask,
-                bytesWritten: 0,
-                tempFileURL: nil,
-                completed: false
-            )
-
-            active.segments[index] = segment
+        let persistedSegments = manifest?.segments.sorted { $0.index < $1.index }
+        let segmentsSource = persistedSegments ?? ranges.enumerated().map { index, range in
+            PersistedSegment(index: index, lowerBound: range.lowerBound, upperBound: range.upperBound, tempFileName: nil, completed: false)
         }
 
-        activeTasks[task.id] = active
+        var totalWritten: Int64 = 0
+        for segmentState in segmentsSource {
+            let range = segmentState.lowerBound...segmentState.upperBound
+            let partURL = segmentState.tempFileName.map { tempDir.appendingPathComponent($0) }
+            let completed = segmentState.completed && partURL.map { FileManager.default.fileExists(atPath: $0.path) } == true
+            let bytesWritten = completed ? (range.upperBound - range.lowerBound + 1) : 0
 
-        active.segments.values
-            .compactMap(\.urlTask)
-            .forEach { $0.resume() }
+            active.segments[segmentState.index] = SegmentDownload(
+                index: segmentState.index,
+                range: range,
+                urlTask: nil,
+                bytesWritten: bytesWritten,
+                tempFileURL: completed ? partURL : nil,
+                completed: completed
+            )
+            totalWritten += bytesWritten
+        }
+
+        task.downloadedBytes = totalWritten
+        active.bytesAtLastCheck = totalWritten
+        activeTasks[task.id] = active
+        saveSegmentManifest(makeSegmentManifest(from: active))
+        scheduleNextSegmentChunks(for: task.id)
     }
 
-    private func buildRanges(totalBytes: Int64, parts: Int) -> [ClosedRange<Int64>] {
-        guard parts > 1 else { return [0...(max(0, totalBytes - 1))] }
-        let chunk = totalBytes / Int64(parts)
+    private func preferredChunkSize(for totalBytes: Int64) -> Int64 {
+        let floor = max(minimumSegmentSize, 4 * 1024 * 1024)
+        let target = max(floor, totalBytes / Int64(max(connectionsPerDownload * 3, 1)))
+        return min(max(target, floor), 32 * 1024 * 1024)
+    }
+
+    private func buildRanges(totalBytes: Int64, chunkSize: Int64) -> [ClosedRange<Int64>] {
+        guard totalBytes > 0 else { return [] }
         var result: [ClosedRange<Int64>] = []
         var start: Int64 = 0
 
-        for index in 0..<parts {
-            let isLast = index == parts - 1
-            let end = isLast ? max(0, totalBytes - 1) : max(start, start + chunk - 1)
+        while start < totalBytes {
+            let end = min(totalBytes - 1, start + max(chunkSize, 1) - 1)
             result.append(start...end)
             start = end + 1
         }
         return result
+    }
+
+    private func scheduleNextSegmentChunks(for taskId: UUID) {
+        guard var active = activeTasks[taskId], active.isSegmented else { return }
+        guard active.task.status == .downloading else { return }
+
+        let source = sourceKey(for: active.task.url)
+        let sourceLimit = sourceConnectionLimit(for: source)
+        let otherConnections = max(0, activeNetworkConnections(forSource: source) - active.runningNetworkTasks)
+        let maxForTask = max(1, min(connectionsPerDownload, sourceLimit - otherConnections))
+        let runningCount = active.segments.values.filter { $0.urlTask != nil }.count
+        guard runningCount < maxForTask else { return }
+
+        let availableSlots = maxForTask - runningCount
+        let pendingIndexes = active.segments.values
+            .filter { !$0.completed && $0.urlTask == nil }
+            .sorted { $0.index < $1.index }
+            .prefix(availableSlots)
+            .map(\.index)
+
+        guard !pendingIndexes.isEmpty else { return }
+
+        for index in pendingIndexes {
+            guard var segment = active.segments[index] else { continue }
+            var request = URLRequest(url: active.task.url)
+            request.setValue("bytes=\(segment.range.lowerBound)-\(segment.range.upperBound)", forHTTPHeaderField: "Range")
+
+            let segmentTask = urlSession.downloadTask(with: request)
+            segmentTask.taskDescription = "segment|\(taskId.uuidString)|\(index)"
+            segment.urlTask = segmentTask
+            active.segments[index] = segment
+            segmentTask.resume()
+        }
+
+        activeTasks[taskId] = active
     }
 
     private func probeServerForSegmentation(_ url: URL, completion: @escaping (Bool, Int64) -> Void) {
@@ -679,24 +763,39 @@ final class DownloadManager: NSObject, ObservableObject {
         removePausedTask(task.id)
         deleteResumeData(for: task.id)
         queuedResumeData.removeValue(forKey: task.id)
+        queuedSegmentManifests.removeValue(forKey: task.id)
+        deleteSegmentManifest(for: task.id)
         cleanupTemporaryArtifacts(for: task.id)
         scheduleNextDownloads()
     }
 
     private func handleFailure(taskId: UUID, error: Error, resumeData: Data?) {
-        guard let active = activeTasks[taskId] else { return }
+        guard var active = activeTasks[taskId] else { return }
 
         if active.task.retryCount < active.task.maxRetries {
             active.task.retryCount += 1
             active.task.error = "Retry \(active.task.retryCount)/\(active.task.maxRetries): \(error.localizedDescription)"
             active.task.status = .pending
 
+            if active.isSegmented {
+                active.segments = active.segments.mapValues { segment in
+                    var updated = segment
+                    updated.urlTask = nil
+                    updated.bytesWritten = segment.completed ? (segment.range.upperBound - segment.range.lowerBound + 1) : 0
+                    return updated
+                }
+                activeTasks[taskId] = active
+                saveSegmentManifest(makeSegmentManifest(from: active))
+            }
+
             if let resumeData {
                 queuedResumeData[taskId] = resumeData
                 saveResumeData(resumeData, for: taskId)
             }
 
-            cleanupTemporaryArtifacts(for: taskId)
+            if !active.isSegmented {
+                cleanupTemporaryArtifacts(for: taskId)
+            }
 
             let backoff = min(pow(2.0, Double(active.task.retryCount - 1)), 20)
             DispatchQueue.main.asyncAfter(deadline: .now() + backoff) { [weak self] in
@@ -708,6 +807,9 @@ final class DownloadManager: NSObject, ObservableObject {
         } else {
             active.task.error = error.localizedDescription
             active.task.status = .failed
+            if active.isSegmented {
+                saveSegmentManifest(makeSegmentManifest(from: active))
+            }
             scheduleNextDownloads()
         }
     }
@@ -811,7 +913,7 @@ final class DownloadManager: NSObject, ObservableObject {
                 try FileManager.default.removeItem(at: destination)
             }
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: destination.path, contents: nil)
+            _ = FileManager.default.createFile(atPath: destination.path, contents: nil)
 
             let output = try FileHandle(forWritingTo: destination)
             defer { try? output.close() }
@@ -832,6 +934,28 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     // MARK: - Persistence
+
+    private func makeSegmentManifest(from active: ActiveDownload) -> SegmentResumeManifest {
+        let segments = active.segments.values
+            .sorted { $0.index < $1.index }
+            .map { segment in
+                PersistedSegment(
+                    index: segment.index,
+                    lowerBound: segment.range.lowerBound,
+                    upperBound: segment.range.upperBound,
+                    tempFileName: segment.tempFileURL?.lastPathComponent,
+                    completed: segment.completed
+                )
+            }
+
+        return SegmentResumeManifest(
+            taskID: active.task.id,
+            url: active.task.url,
+            destination: active.task.destination,
+            totalBytes: active.task.totalBytes,
+            segments: segments
+        )
+    }
 
     private func makePausedRecord(from task: DownloadTask) -> DownloadRecord {
         DownloadRecord(
@@ -862,11 +986,35 @@ final class DownloadManager: NSObject, ObservableObject {
         try? FileManager.default.removeItem(at: url)
     }
 
+    private func saveSegmentManifest(_ manifest: SegmentResumeManifest) {
+        let url = segmentManifestURL(for: manifest.taskID)
+        guard let data = try? encoder.encode(manifest) else { return }
+        try? data.write(to: url)
+    }
+
+    private func loadSegmentManifest(for taskId: UUID) -> SegmentResumeManifest? {
+        let url = segmentManifestURL(for: taskId)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? decoder.decode(SegmentResumeManifest.self, from: data)
+    }
+
+    private func deleteSegmentManifest(for taskId: UUID) {
+        let url = segmentManifestURL(for: taskId)
+        try? FileManager.default.removeItem(at: url)
+    }
+
     private func resumeDataURL(for taskId: UUID) -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("neutron/resumeData", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("\(taskId.uuidString).resume")
+    }
+
+    private func segmentManifestURL(for taskId: UUID) -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("neutron/downloads/manifests", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("\(taskId.uuidString).json")
     }
 
     private func saveCompletedTasks() {
@@ -1017,12 +1165,15 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 }
                 try FileManager.default.moveItem(at: location, to: partURL)
                 segment.tempFileURL = partURL
+                segment.bytesWritten = segment.range.upperBound - segment.range.lowerBound + 1
                 segment.completed = true
                 segment.urlTask = nil
                 active.segments[index] = segment
                 activeTasks[taskId] = active
+                saveSegmentManifest(makeSegmentManifest(from: active))
 
                 DispatchQueue.main.async {
+                    self.scheduleNextSegmentChunks(for: taskId)
                     self.mergeSegmentsIfReady(taskId: taskId)
                 }
             } catch {

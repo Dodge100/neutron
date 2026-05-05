@@ -98,6 +98,47 @@ class FileOperations: ObservableObject {
         }
     }
 
+    @discardableResult
+    func moveFiles(urls: [URL], to destinationDirectory: URL) -> Bool {
+        let fileManager = FileManager.default
+        let destination = destinationDirectory.standardizedFileURL
+        var moved = false
+
+        for sourceURL in urls where sourceURL.isFileURL {
+            let source = sourceURL.standardizedFileURL
+            let parent = source.deletingLastPathComponent().standardizedFileURL
+
+            if source == destination || parent == destination {
+                continue
+            }
+
+            if source.hasDirectoryPath,
+               destination.path.hasPrefix(source.path + "/") {
+                continue
+            }
+
+            var candidate = destination.appendingPathComponent(source.lastPathComponent)
+            if fileManager.fileExists(atPath: candidate.path) {
+                candidate = uniqueDestinationURL(for: source, in: destination)
+            }
+
+            do {
+                try fileManager.moveItem(at: source, to: candidate)
+                invalidateCache(for: source)
+                invalidateCache(for: candidate)
+                moved = true
+            } catch {
+                lastError = "Failed to move \(source.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+
+        if moved {
+            invalidateCache(for: destination)
+        }
+
+        return moved
+    }
+
     func createNewFolder(in directory: URL, name: String) -> URL? {
         let folderURL = directory.appendingPathComponent(name)
         do {
@@ -205,6 +246,28 @@ class FileOperations: ObservableObject {
     private func invalidateCache(for url: URL) {
         infoCache.removeObject(forKey: url as NSURL)
         infoCache.removeObject(forKey: url.deletingLastPathComponent() as NSURL)
+    }
+
+    private func uniqueDestinationURL(for source: URL, in directory: URL) -> URL {
+        let ext = source.pathExtension
+        let base = source.deletingPathExtension().lastPathComponent
+
+        var counter = 2
+        while true {
+            let candidateName: String
+            if ext.isEmpty {
+                candidateName = "\(base) \(counter)"
+            } else {
+                candidateName = "\(base) \(counter).\(ext)"
+            }
+
+            let candidate = directory.appendingPathComponent(candidateName)
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+
+            counter += 1
+        }
     }
 }
 
