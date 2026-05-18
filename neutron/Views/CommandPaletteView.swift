@@ -18,9 +18,8 @@ struct CommandPaletteView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
-                TextField("Type a command…", text: $query)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 16))
+                TextField("Type command", text: $query)
+                    .textFieldStyle(.roundedBorder)
                     .focused($isFocused)
                     .onSubmit {
                         executeSelected()
@@ -34,28 +33,27 @@ struct CommandPaletteView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(12)
+            .padding(10)
 
             Divider()
 
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(filteredCommands.enumerated()), id: \.element.id) { index, command in
-                            CommandRow(
-                                command: command,
-                                isSelected: index == selectedIndex
-                            )
-                            .id(index)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                selectedIndex = index
-                                executeSelected()
-                            }
+                List {
+                    ForEach(Array(filteredCommands.enumerated()), id: \.element.id) { index, command in
+                        CommandRow(
+                            command: command,
+                            isSelected: index == selectedIndex
+                        )
+                        .id(index)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedIndex = index
+                            executeSelected()
                         }
+                        .listRowBackground(index == selectedIndex ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.25) : Color.clear)
                     }
-                    .padding(.vertical, 4)
                 }
+                .listStyle(.plain)
                 .frame(maxHeight: 360)
                 .onChange(of: selectedIndex) { _, newIndex in
                     proxy.scrollTo(newIndex, anchor: .center)
@@ -69,13 +67,8 @@ struct CommandPaletteView: View {
                     .padding()
             }
         }
-        .frame(width: 480)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
+        .frame(width: 500)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             isFocused = true
             selectedIndex = 0
@@ -112,32 +105,26 @@ private struct CommandRow: View {
         HStack(spacing: 10) {
             Image(systemName: command.icon)
                 .frame(width: 20)
-                .foregroundColor(isSelected ? .white : Color(nsColor: .controlAccentColor))
+                .foregroundColor(.secondary)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(command.title)
-                    .font(.system(size: 13))
-                    .foregroundColor(isSelected ? .white : .primary)
+                    .font(.body)
                 Text(command.category)
-                    .font(.system(size: 10))
-                    .foregroundColor(isSelected ? .white.opacity(0.7) : .secondary)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             Spacer()
 
             if let shortcut = command.shortcutDisplay {
                 Text(shortcut)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(isSelected ? .white.opacity(0.7) : .secondary)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundColor(.secondary)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? Color(nsColor: .controlAccentColor) : Color.clear)
-        )
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
 }
 
@@ -173,6 +160,7 @@ struct PaletteCommand: Identifiable {
             (.goDesktop, "desktopcomputer", "Navigation"),
             (.goDownloads, "arrow.down.circle", "Navigation"),
             (.goDocuments, "doc.text", "Navigation"),
+            (.goToFolder, "folder", "Navigation"),
             (.toggleHidden, "eye", "View"),
             (.quickLook, "eye.fill", "View"),
             (.getInfo, "info.circle", "File"),
@@ -203,14 +191,6 @@ struct PaletteCommand: Identifiable {
             category: "Tools",
             shortcutDisplay: "⌥⌘J",
             action: { NotificationCenter.default.post(name: .showDownloadsPanel, object: nil) }
-        ))
-
-        commands.append(PaletteCommand(
-            title: "Go to Folder…",
-            icon: "folder",
-            category: "Navigation",
-            shortcutDisplay: "⇧⌘G",
-            action: { NotificationCenter.default.post(name: .goToFolder, object: nil) }
         ))
 
         return commands

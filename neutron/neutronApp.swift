@@ -76,10 +76,7 @@ struct neutronApp: App {
 
                 Divider()
 
-                Button("Go to Folder…") {
-                    NotificationCenter.default.post(name: .goToFolder, object: nil)
-                }
-                .keyboardShortcut("g", modifiers: [.command, .shift])
+                shortcutCommand("Go to Folder…", action: .goToFolder)
             }
 
             CommandMenu("Tools") {
@@ -122,6 +119,7 @@ extension Notification.Name {
     static let newTab = Notification.Name("newTab")
     static let closeTab = Notification.Name("closeTab")
     static let createNewFolder = Notification.Name("createNewFolder")
+    static let createNewFile = Notification.Name("createNewFile")
     static let toggleHiddenFiles = Notification.Name("toggleHiddenFiles")
     static let goToParentFolder = Notification.Name("goToParentFolder")
     static let openSelectedItem = Notification.Name("openSelectedItem")

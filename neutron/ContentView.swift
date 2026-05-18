@@ -33,9 +33,11 @@ struct ContentView: View {
     @State private var cloudSearchResults: [CloudSearchResult] = []
     @State private var cloudSearchTask: Task<Void, Never>?
 
-    // New Folder
+    // Creation
     @State private var showNewFolderAlert: Bool = false
     @State private var newFolderName: String = ""
+    @State private var showNewFileAlert: Bool = false
+    @State private var newFileName: String = ""
 
     // Share
     @State private var shareItems: [URL] = []
@@ -155,12 +157,6 @@ struct ContentView: View {
             }
             .help("Show Hidden Files")
         }
-        ToolbarItem(id: "newFolder") {
-            Button("New Folder", systemImage: "folder.badge.plus") {
-                newFolderName = ""
-                showNewFolderAlert = true
-            }
-        }
         ToolbarItem(id: "delete") {
             Button("Delete", systemImage: "trash", role: .destructive) {
                 NotificationCenter.default.post(
@@ -206,6 +202,16 @@ struct ContentView: View {
                     isPresented: $showNewFolderAlert
                 ) { name in
                     _ = fileOps.createNewFolder(in: activePanePath, name: name)
+                    NotificationCenter.default.post(name: .refreshFiles, object: nil)
+                }
+            }
+            .sheet(isPresented: $showNewFileAlert) {
+                NewFileSheet(
+                    fileName: $newFileName,
+                    isPresented: $showNewFileAlert
+                ) { name in
+                    _ = fileOps.createNewFile(in: activePanePath, name: name)
+                    NotificationCenter.default.post(name: .refreshFiles, object: nil)
                 }
             }
             .onAppear {
@@ -220,6 +226,22 @@ struct ContentView: View {
     }
 
     private func bindHandlers<Content: View>(to view: Content) -> some View {
+        bindTransferHandlers(to: bindNavigationHandlers(to: bindCreationHandlers(to: view)))
+    }
+
+    private func bindCreationHandlers<Content: View>(to view: Content) -> some View {
+        view
+            .onReceive(NotificationCenter.default.publisher(for: .createNewFolder)) { _ in
+                newFolderName = ""
+                showNewFolderAlert = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .createNewFile)) { _ in
+                newFileName = ""
+                showNewFileAlert = true
+            }
+    }
+
+    private func bindNavigationHandlers<Content: View>(to view: Content) -> some View {
         view
             .onChange(of: activePanePath) { _, newPath in
                 pushHistory(newPath)
@@ -234,10 +256,6 @@ struct ContentView: View {
             }
             .onChange(of: isSearching) { _, _ in
                 refreshCloudSearchResults()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .createNewFolder)) { _ in
-                newFolderName = ""
-                showNewFolderAlert = true
             }
             .onReceive(NotificationCenter.default.publisher(for: .navigateBack)) { _ in
                 goBack()
@@ -263,6 +281,10 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .goDocuments)) { _ in
                 selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
             }
+    }
+
+    private func bindTransferHandlers<Content: View>(to view: Content) -> some View {
+        view
             .onReceive(NotificationCenter.default.publisher(for: .showDownloadsPanel)) { notification in
                 handleTransferWindowRequest(notification, replayName: nil)
             }
@@ -450,6 +472,37 @@ struct NewFolderSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding()
+    }
+}
+
+struct NewFileSheet: View {
+    @Binding var fileName: String
+    @Binding var isPresented: Bool
+    var onCreate: (String) -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("New File")
+                .font(.headline)
+            TextField("File name", text: $fileName)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 300)
+            HStack {
+                Button("Cancel") {
+                    isPresented = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Create") {
+                    let name = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !name.isEmpty else { return }
+                    onCreate(name)
+                    isPresented = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(fileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding()

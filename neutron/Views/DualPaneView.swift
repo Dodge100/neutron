@@ -3,9 +3,6 @@ import Combine
 import UniformTypeIdentifiers
 import AppKit
 
-private let maxHorizontalPanes = 3
-private let maxVerticalPanes = 2
-
 enum PaneAxis: String, Codable, CaseIterable, Identifiable {
     case horizontal
     case vertical
@@ -233,12 +230,7 @@ struct DualPaneView: View {
     }
 
     private func canAddPane(axis: PaneAxis) -> Bool {
-        guard let focusedPaneID else { return false }
-        let maxForAxis = axis == .horizontal ? maxHorizontalPanes : maxVerticalPanes
-        if let count = layoutTree.siblingCount(for: focusedPaneID, axis: axis) {
-            return count < maxForAxis
-        }
-        return true
+        focusedPaneID != nil
     }
 
     private var pathBarEnabled: Bool {
@@ -271,6 +263,10 @@ struct DualPaneView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .goToParentFolder)) { _ in
                 handleGoToParentFolder()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .goToFolder)) { notification in
+                guard notification.object == nil else { return }
+                postFocusedPaneCommand(.goToFolder)
             }
 
         let commandView = tabView
@@ -372,6 +368,7 @@ struct DualPaneView: View {
                     cloudWorkspace: cloudWorkspace.model,
                     canAddPane: true,
                     canClosePane: paneStates.count > 1,
+                    showFocusRing: paneStates.count > 1,
                     onViewModeChange: handleViewModeChange,
                     onAddSiblingPane: addPane(nextTo:axis:),
                     onRemovePane: removePane(_:),
@@ -450,6 +447,21 @@ struct DualPaneView: View {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
+            Menu {
+                Button("File") {
+                    NotificationCenter.default.post(name: .createNewFile, object: nil)
+                }
+
+                Button("Folder") {
+                    NotificationCenter.default.post(name: .createNewFolder, object: nil)
+                }
+            } label: {
+                Label("Add", systemImage: "plus")
+            }
+            .help("Add File or Folder")
+
+            Divider()
+
             ForEach(FileBrowserView.ViewMode.allCases, id: \.self) { mode in
                 Button {
                     if let focusedPaneID {
@@ -722,27 +734,26 @@ private func handleCloseTab() {
     }
 
     private static func defaultLayout(for paneIDs: [UUID], preset: WorkspaceLayoutPreset) -> PaneNode {
-        let maxTotal = maxHorizontalPanes * maxVerticalPanes
-        let ids = paneIDs.prefix(maxTotal)
-        let nodes = ids.map { PaneNode.pane($0) }
+        let nodes = paneIDs.map { PaneNode.pane($0) }
 
         switch preset {
         case .horizontal:
             if nodes.count == 1 { return nodes[0] }
-            return .split(id: UUID(), axis: .horizontal, children: Array(nodes.prefix(maxHorizontalPanes)))
+            return .split(id: UUID(), axis: .horizontal, children: nodes)
         case .vertical:
             if nodes.count == 1 { return nodes[0] }
-            return .split(id: UUID(), axis: .vertical, children: Array(nodes.prefix(maxVerticalPanes)))
+            return .split(id: UUID(), axis: .vertical, children: nodes)
         case .grid:
             if nodes.count == 1 { return nodes[0] }
             if nodes.count == 2 {
                 return .split(id: UUID(), axis: .horizontal, children: Array(nodes))
             }
-            let rowCount = min(Int(ceil(Double(nodes.count) / Double(maxHorizontalPanes))), maxVerticalPanes)
+            let columnCount = max(1, Int(ceil(sqrt(Double(nodes.count)))))
+            let rowCount = Int(ceil(Double(nodes.count) / Double(columnCount)))
             var rows: [PaneNode] = []
             for row in 0..<rowCount {
-                let start = row * maxHorizontalPanes
-                let end = min(start + maxHorizontalPanes, nodes.count)
+                let start = row * columnCount
+                let end = min(start + columnCount, nodes.count)
                 guard start < nodes.count else { break }
                 let rowNodes = Array(nodes[start..<end])
                 rows.append(rowNodes.count == 1 ? rowNodes[0] : .split(id: UUID(), axis: .horizontal, children: rowNodes))
@@ -788,14 +799,6 @@ private func handleCloseTab() {
             return .split(id: UUID(), axis: axis, children: ordered)
 
         case .split(let id, let currentAxis, let children):
-            if currentAxis == axis,
-               let targetIndex = children.firstIndex(where: { $0.containsPane(targetPaneID) }) {
-                var newChildren = children
-                let insertIndex = beforeTarget ? targetIndex : targetIndex + 1
-                newChildren.insert(.pane(newPaneID), at: insertIndex)
-                return .split(id: id, axis: currentAxis, children: newChildren)
-            }
-
             return .split(
                 id: id,
                 axis: currentAxis,
@@ -842,6 +845,7 @@ struct PaneWorkspaceNodeView: View {
     var cloudWorkspace: CloudWorkspaceModel
     var canAddPane: Bool
     var canClosePane: Bool
+    var showFocusRing: Bool
     var onViewModeChange: (UUID, FileBrowserView.ViewMode) -> Void
     var onAddSiblingPane: (UUID, PaneAxis) -> Void
     var onRemovePane: (UUID) -> Void
@@ -865,6 +869,7 @@ struct PaneWorkspaceNodeView: View {
                     cloudWorkspace: cloudWorkspace,
                     canAddPane: canAddPane,
                     canClosePane: canClosePane,
+                    showFocusRing: showFocusRing,
                     onFocus: {
                         focusedPaneID = paneID
                         if let pane = paneStates[paneID] {
@@ -912,6 +917,7 @@ struct PaneWorkspaceNodeView: View {
                             cloudWorkspace: cloudWorkspace,
                             canAddPane: canAddPane,
                             canClosePane: canClosePane,
+                            showFocusRing: showFocusRing,
                             onViewModeChange: onViewModeChange,
                             onAddSiblingPane: onAddSiblingPane,
                             onRemovePane: onRemovePane,
@@ -1103,6 +1109,73 @@ struct PaneDividerView: View {
     }
 }
 
+private struct PanePointerFocusObserver: NSViewRepresentable {
+    var onPointerDown: () -> Void
+
+    func makeNSView(context: Context) -> FocusObserverNSView {
+        let view = FocusObserverNSView()
+        view.onPointerDown = onPointerDown
+        return view
+    }
+
+    func updateNSView(_ nsView: FocusObserverNSView, context: Context) {
+        nsView.onPointerDown = onPointerDown
+    }
+
+    static func dismantleNSView(_ nsView: FocusObserverNSView, coordinator: ()) {
+        nsView.stopMonitoring()
+    }
+
+    final class FocusObserverNSView: NSView {
+        var onPointerDown: (() -> Void)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            startMonitoring()
+        }
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow == nil {
+                stopMonitoring()
+            }
+            super.viewWillMove(toWindow: newWindow)
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+
+        func startMonitoring() {
+            stopMonitoring()
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                guard let self,
+                      let window = self.window,
+                      event.window === window else {
+                    return event
+                }
+
+                let pointInView = self.convert(event.locationInWindow, from: nil)
+                if self.bounds.contains(pointInView) {
+                    self.onPointerDown?()
+                }
+
+                return event
+            }
+        }
+
+        func stopMonitoring() {
+            guard let monitor else { return }
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
+
+        deinit {
+            stopMonitoring()
+        }
+    }
+}
+
 struct WorkspacePaneContainerView: View {
     enum FileBrowserCommand: Equatable {
         case duplicate
@@ -1115,6 +1188,7 @@ struct WorkspacePaneContainerView: View {
         case rename
         case refresh
         case openInTerminal
+        case openPathPrompt
     }
 
     let paneID: UUID
@@ -1130,6 +1204,7 @@ struct WorkspacePaneContainerView: View {
     var cloudWorkspace: CloudWorkspaceModel
     var canAddPane: Bool
     var canClosePane: Bool
+    var showFocusRing: Bool
     var onFocus: () -> Void
     var onViewModeChange: (FileBrowserView.ViewMode) -> Void
     var onAddHorizontal: () -> Void
@@ -1149,11 +1224,8 @@ struct WorkspacePaneContainerView: View {
     var body: some View {
         let baseView = paneContainer
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-                TapGesture().onEnded {
-                    onFocus()
-                }
+            .background(
+                PanePointerFocusObserver(onPointerDown: onFocus)
             )
 
         let commandView = baseView
@@ -1186,6 +1258,9 @@ struct WorkspacePaneContainerView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .openInTerminal)) { notification in
                 handlePaneCommandNotification(notification, command: .openInTerminal)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .goToFolder)) { notification in
+                handlePaneCommandNotification(notification, command: .openPathPrompt)
             }
 
         return commandView
@@ -1279,7 +1354,11 @@ struct WorkspacePaneContainerView: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 4)
-                .stroke(isFocused ? Color(nsColor: .controlAccentColor).opacity(0.5) : Color.clear, lineWidth: 1)
+                .stroke(showFocusRing && isFocused ? Color(nsColor: .controlAccentColor).opacity(0.5) : Color.clear, lineWidth: 1)
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let selectedTab, selectedTab.path.isFileURL else { return false }
+            return handleDroppedFiles(urls, onto: selectedTab)
         }
     }
 
@@ -1323,6 +1402,9 @@ struct WorkspacePaneContainerView: View {
                 onPreviewSelectionChange: { previewItem in
                     guard paneState.selectedTabId == tab.id else { return }
                     onPreviewSelectionChange(previewItem)
+                },
+                onInteraction: {
+                    onFocus()
                 }
             )
         }
@@ -1420,6 +1502,7 @@ struct WorkspacePaneContainerView: View {
         case .rename: return .rename
         case .refresh: return .refresh
         case .openInTerminal: return .openInTerminal
+        case .openPathPrompt: return .openPathPrompt
         }
     }
 
@@ -1438,7 +1521,20 @@ struct WorkspacePaneContainerView: View {
     private func handleDroppedFiles(_ urls: [URL], onto tab: FileTab) -> Bool {
         guard tab.path.isFileURL else { return false }
         guard FileManager.default.fileExists(atPath: tab.path.path) else { return false }
-        guard fileOps.moveFiles(urls: urls, to: tab.path) else { return false }
+
+        let destination = tab.path.standardizedFileURL
+        var affectedDirectories = Set([destination.path])
+        for url in urls where url.isFileURL {
+            affectedDirectories.insert(url.standardizedFileURL.deletingLastPathComponent().path)
+        }
+
+        guard fileOps.moveFiles(urls: urls, to: destination) else { return false }
+
+        NotificationCenter.default.post(
+            name: .fileSystemEntriesMoved,
+            object: nil,
+            userInfo: ["affectedDirectories": Array(affectedDirectories)]
+        )
 
         paneState.selectedTabId = tab.id
         onFocus()
@@ -1509,7 +1605,6 @@ private struct PaneTabStripView: View {
                         PaneTabStripItem(
                             title: tab.title,
                             isSelected: tab.id == selectedTabID,
-                            alternate: index.isMultiple(of: 2),
                             isDropTargeted: dropIndex == index,
                             onSelect: {
                                 onSelect(tab)
@@ -1583,22 +1678,18 @@ private struct TabDragPreview: View {
 private struct PaneTabStripItem: View {
     let title: String
     let isSelected: Bool
-    let alternate: Bool
     var isDropTargeted: Bool = false
     var onSelect: () -> Void
     var onClose: () -> Void
     var onDropFiles: ([URL]) -> Bool = { _ in false }
 
-    @State private var hovering = false
     @State private var isFileDropTargeted = false
 
     private var tabFill: Color {
         if isSelected {
             return Color(nsColor: .controlBackgroundColor)
         }
-        return alternate
-            ? Color(nsColor: .underPageBackgroundColor).opacity(0.95)
-            : Color(nsColor: .windowBackgroundColor)
+        return Color(nsColor: .windowBackgroundColor)
     }
 
     var body: some View {
@@ -1609,14 +1700,12 @@ private struct PaneTabStripItem: View {
                 .truncationMode(.middle)
                 .frame(maxWidth: 160)
 
-            if hovering || isSelected {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -1650,9 +1739,6 @@ private struct PaneTabStripItem: View {
             onDropFiles(urls)
         } isTargeted: { targeting in
             isFileDropTargeted = targeting
-        }
-        .onHover { hovering in
-            self.hovering = hovering
         }
     }
 }

@@ -32,6 +32,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     case goDesktop = "Go to Desktop"
     case goDownloads = "Go to Downloads"
     case goDocuments = "Go to Documents"
+    case goToFolder = "Open Path…"
     case toggleHidden = "Toggle Hidden Files"
     case quickLook = "Quick Look"
     case getInfo = "Get Info"
@@ -67,6 +68,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .goDesktop: return NeutronShortcut(key: "k", modifiers: [.command, .shift])
         case .goDownloads: return NeutronShortcut(key: "l", modifiers: [.command, .option])
         case .goDocuments: return NeutronShortcut(key: "o", modifiers: [.command, .shift])
+        case .goToFolder: return NeutronShortcut(key: "g", modifiers: [.command, .shift])
         case .toggleHidden: return NeutronShortcut(key: ".", modifiers: [.command, .shift])
         case .quickLook: return NeutronShortcut(key: " ", modifiers: [])
         case .getInfo: return NeutronShortcut(key: "i", modifiers: .command)
@@ -77,7 +79,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .viewAsIcons: return NeutronShortcut(key: "1", modifiers: .command)
         case .viewAsList: return NeutronShortcut(key: "2", modifiers: .command)
         case .viewAsColumns: return NeutronShortcut(key: "3", modifiers: .command)
-        case .commandPalette: return NeutronShortcut(key: "p", modifiers: .command)
+        case .commandPalette: return NeutronShortcut(key: "p", modifiers: [.command, .shift])
         }
     }
     
@@ -102,6 +104,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         case .goDesktop: return .goDesktop
         case .goDownloads: return .goDownloads
         case .goDocuments: return .goDocuments
+        case .goToFolder: return .goToFolder
         case .toggleHidden: return .toggleHiddenFiles
         case .quickLook: return .quickLookSelected
         case .getInfo: return .getInfoSelected
@@ -314,7 +317,7 @@ class ShortcutManager: ObservableObject {
         case .newTab, .closeTab, .newFolder, .duplicate, .selectAll,
              .toggleHidden, .splitPaneHorizontal, .splitPaneVertical,
              .viewAsIcons, .viewAsList, .viewAsColumns,
-             .goBack, .goForward, .goUp, .goHome, .goDesktop, .goDownloads, .goDocuments,
+             .goBack, .goForward, .goUp, .goHome, .goDesktop, .goDownloads, .goDocuments, .goToFolder,
              .openTerminal, .copy, .paste, .cut, .delete:
             return true
         case .search, .quickLook, .getInfo, .rename, .refresh, .toggleRightPane, .commandPalette:
@@ -384,6 +387,7 @@ extension Notification.Name {
     static let trashSelectedFiles = Notification.Name("neutron.trashSelectedFiles")
     static let shareSelectedFiles = Notification.Name("neutron.shareSelectedFiles")
     static let showCommandPalette = Notification.Name("neutron.showCommandPalette")
+    static let fileSystemEntriesMoved = Notification.Name("neutron.fileSystemEntriesMoved")
 }
 
 // MARK: - Shortcut Recorder View
@@ -514,7 +518,7 @@ struct KeyboardShortcutsSettingsView: View {
     var groupedActions: [String: [ShortcutAction]] {
         var groups: [String: [ShortcutAction]] = [:]
         
-        let navigation: [ShortcutAction] = [.goBack, .goForward, .goUp, .goHome, .goDesktop, .goDownloads, .goDocuments]
+        let navigation: [ShortcutAction] = [.goBack, .goForward, .goUp, .goHome, .goDesktop, .goDownloads, .goDocuments, .goToFolder]
         let fileOps: [ShortcutAction] = [.newFolder, .duplicate, .delete, .copy, .paste, .cut, .rename]
         let view: [ShortcutAction] = [.viewAsIcons, .viewAsList, .viewAsColumns, .toggleHidden, .toggleRightPane, .refresh]
         let panes: [ShortcutAction] = [.splitPaneHorizontal, .splitPaneVertical]

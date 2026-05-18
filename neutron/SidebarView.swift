@@ -11,6 +11,7 @@ import Combine
 struct SidebarView: View {
     @Binding var selectedPath: URL?
 
+    @EnvironmentObject private var fileOps: FileOperations
     @State private var externalVolumes: [URL] = []
     @State private var finderTags: [FinderTag] = []
     @StateObject private var cloudWorkspace = CloudWorkspaceStore.shared
@@ -67,6 +68,9 @@ struct SidebarView: View {
                 ForEach(favoriteItems, id: \.url) { item in
                     Label(item.label, systemImage: item.systemImage)
                         .tag(item.url)
+                        .dropDestination(for: URL.self) { urls, _ in
+                            return moveDroppedURLs(urls, to: item.url)
+                        }
                         .contextMenu {
                             if favoritesStore.isFavorite(item.url) {
                                 Button("Remove from Favorites") {
@@ -99,6 +103,9 @@ struct SidebarView: View {
             Section("iCloud") {
                 Label("iCloud Drive", systemImage: "icloud")
                     .tag(homeDir.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs"))
+                    .dropDestination(for: URL.self) { urls, _ in
+                        return moveDroppedURLs(urls, to: homeDir.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs"))
+                    }
             }
             }
 
@@ -107,6 +114,9 @@ struct SidebarView: View {
             Section("Locations") {
                 Label("Macintosh HD", systemImage: "internaldrive")
                     .tag(URL(fileURLWithPath: "/"))
+                    .dropDestination(for: URL.self) { urls, _ in
+                        return moveDroppedURLs(urls, to: URL(fileURLWithPath: "/"))
+                    }
 
                 ForEach(externalVolumes, id: \.self) { volume in
                     HStack {
@@ -123,6 +133,9 @@ struct SidebarView: View {
                         .help("Eject \(volume.lastPathComponent)")
                     }
                     .tag(volume)
+                    .dropDestination(for: URL.self) { urls, _ in
+                        return moveDroppedURLs(urls, to: volume)
+                    }
                 }
 
                 Label("Network", systemImage: "network")
@@ -163,6 +176,16 @@ struct SidebarView: View {
             cloudWorkspace.refreshAccountConnections()
             refreshFinderTags()
         }
+    }
+
+    private func moveDroppedURLs(_ urls: [URL], to destination: URL) -> Bool {
+        guard destination.isFileURL else { return false }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return false }
+
+        return fileOps.moveFiles(urls: urls, to: destination)
     }
 
     private func ejectVolume(_ volume: URL) {

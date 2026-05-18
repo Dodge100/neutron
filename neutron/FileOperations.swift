@@ -151,6 +151,22 @@ class FileOperations: ObservableObject {
         }
     }
 
+    func createNewFile(in directory: URL, name: String) -> URL? {
+        let fileURL = directory.appendingPathComponent(name)
+        guard !FileManager.default.fileExists(atPath: fileURL.path) else {
+            lastError = "A file named \(name) already exists"
+            return nil
+        }
+
+        guard FileManager.default.createFile(atPath: fileURL.path, contents: Data()) else {
+            lastError = "Failed to create file"
+            return nil
+        }
+
+        invalidateCache(for: directory)
+        return fileURL
+    }
+
     func renameFile(at url: URL, to newName: String) -> URL? {
         let newURL = url.deletingLastPathComponent().appendingPathComponent(newName)
         do {

@@ -11,6 +11,10 @@ private extension Color {
     }
 }
 
+private enum FileMoveNotificationUserInfoKey {
+    static let affectedDirectories = "affectedDirectories"
+}
+
 // MARK: - GitStatus
 
 enum GitFileStatus {
@@ -222,6 +226,7 @@ struct FileBrowserView: View {
         case rename
         case refresh
         case openInTerminal
+        case openPathPrompt
     }
 
     @Binding var currentPath: URL
@@ -232,6 +237,7 @@ struct FileBrowserView: View {
     var showsStatusBar: Bool = true
     var externalCommand: ExternalCommand? = nil
     var onPreviewSelectionChange: ((FilePreviewItem?) -> Void)? = nil
+    var onInteraction: (() -> Void)? = nil
 
     @EnvironmentObject private var fileOps: FileOperations
     @AppStorage("iconSize") private var iconSize: Double = 48
@@ -262,6 +268,8 @@ struct FileBrowserView: View {
     @State private var lastClickedURL: URL?
     @State private var lastClickTimestamp: TimeInterval = 0
     @State private var previewRequestID = UUID()
+    @State private var showOpenPathPrompt = false
+    @State private var openPathPromptText = ""
 
     enum SortColumn {
         case name, size, modified, kind
@@ -336,14 +344,37 @@ struct FileBrowserView: View {
                             }
                         )
                     case .column:
-                        ColumnView(
-                            currentPath: $currentPath,
-                            showHiddenFiles: showHiddenFiles,
-                            searchText: searchText,
-                            onPreviewSelectionChange: { selectedFile in
-                                onPreviewSelectionChange?(makePreviewItem(for: selectedFile))
-                            }
-                        )
+                        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            ColumnView(
+                                currentPath: $currentPath,
+                                showHiddenFiles: showHiddenFiles,
+                                searchText: searchText,
+                                onPreviewSelectionChange: { selectedFile in
+                                    onPreviewSelectionChange?(makePreviewItem(for: selectedFile))
+                                }
+                            )
+                        } else {
+                            FileListView(
+                                files: filteredFiles,
+                                selectedFiles: $selectedFiles,
+                                sortColumn: $sortColumn,
+                                sortAscending: $sortAscending,
+                                renamingFile: $renamingFile,
+                                renameText: $renameText,
+                                gitStatuses: gitStatuses,
+                                showSizeColumn: showSizeColumn,
+                                showDateColumn: showDateColumn,
+                                showKindColumn: showKindColumn,
+                                onOpen: handleOpen,
+                                onSelect: handleSelect,
+                                onRenameCommit: commitRename,
+                                contextMenu: contextMenuForFile,
+                                onDropToFolder: handleDroppedURLs(_:to:),
+                                onDropToCurrentDirectory: { urls in
+                                    handleDroppedURLs(urls, to: currentPath)
+                                }
+                            )
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -393,6 +424,16 @@ struct FileBrowserView: View {
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .contextMenu {
+            creationContextMenuItems()
+            Divider()
+            Button("Paste") {
+                fileOps.pasteFiles(to: currentPath)
+                loadFiles()
+            }
+            .disabled(fileOps.clipboardURLs.isEmpty)
+            Button("Refresh") { loadFiles() }
+        }
         .dropDestination(for: URL.self) { urls, _ in
             handleDroppedURLs(urls, to: currentPath)
         }
@@ -407,6 +448,7 @@ struct FileBrowserView: View {
             loadFiles()
             publishPreviewSelection()
         }
+        .onChange(of: searchText) { _, _ in loadFiles() }
         .onChange(of: showHiddenFiles) { _, _ in loadFiles() }
         .onChange(of: sortColumn) { _, _ in files = sortFiles(files) }
         .onChange(of: sortAscending) { _, _ in files = sortFiles(files) }
@@ -435,9 +477,29 @@ struct FileBrowserView: View {
                 handleOpen(file)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .fileSystemEntriesMoved)) { notification in
+            guard let affectedDirectories = notification.userInfo?[FileMoveNotificationUserInfoKey.affectedDirectories] as? [String] else { return }
+            let currentDirectory = currentPath.standardizedFileURL.path
+            if affectedDirectories.contains(currentDirectory) {
+                loadFiles()
+            }
+        }
         .sheet(isPresented: $showGetInfo) {
             if let info = getInfoTarget {
                 GetInfoView(info: info, isPresented: $showGetInfo)
+            }
+        }
+        .sheet(isPresented: $showOpenPathPrompt) {
+            PathEditorSheet(
+                path: $openPathPromptText,
+                isEditing: $showOpenPathPrompt,
+                baseDirectory: currentPath
+            ) { newPath in
+                guard let url = PathEditorSheet.resolvedURL(for: newPath, relativeTo: currentPath),
+                      FileManager.default.fileExists(atPath: url.path) else {
+                    return
+                }
+                currentPath = url
             }
         }
         .alert("Move to Trash?", isPresented: $showTrashConfirmation) {
@@ -461,6 +523,7 @@ struct FileBrowserView: View {
     // MARK: - Actions
 
     private func handleOpen(_ file: FileItem) {
+        onInteraction?()
         if file.isDirectory {
             currentPath = file.path
         } else {
@@ -470,66 +533,28 @@ struct FileBrowserView: View {
 
     @discardableResult
     private func handleDroppedURLs(_ urls: [URL], to destinationDirectory: URL) -> Bool {
-        let fileManager = FileManager.default
+        onInteraction?()
+
         let destination = destinationDirectory.standardizedFileURL
-        var moved = false
-
-        for sourceURL in urls where sourceURL.isFileURL {
-            let source = sourceURL.standardizedFileURL
-            let parent = source.deletingLastPathComponent().standardizedFileURL
-
-            if source == destination || parent == destination {
-                continue
-            }
-
-            if source.hasDirectoryPath,
-               destination.path.hasPrefix(source.path + "/") {
-                continue
-            }
-
-            var candidate = destination.appendingPathComponent(source.lastPathComponent)
-            if fileManager.fileExists(atPath: candidate.path) {
-                candidate = uniqueDestinationURL(for: source, in: destination)
-            }
-
-            do {
-                try fileManager.moveItem(at: source, to: candidate)
-                moved = true
-            } catch {
-                fileOps.lastError = "Failed to move \(source.lastPathComponent): \(error.localizedDescription)"
-            }
+        var affectedDirectories = Set([destination.path])
+        for url in urls where url.isFileURL {
+            affectedDirectories.insert(url.standardizedFileURL.deletingLastPathComponent().path)
         }
 
-        if moved {
-            loadFiles()
-        }
+        guard fileOps.moveFiles(urls: urls, to: destination) else { return false }
 
-        return moved
-    }
+        NotificationCenter.default.post(
+            name: .fileSystemEntriesMoved,
+            object: nil,
+            userInfo: [FileMoveNotificationUserInfoKey.affectedDirectories: Array(affectedDirectories)]
+        )
 
-    private func uniqueDestinationURL(for source: URL, in directory: URL) -> URL {
-        let ext = source.pathExtension
-        let base = source.deletingPathExtension().lastPathComponent
-
-        var counter = 2
-        while true {
-            let candidateName: String
-            if ext.isEmpty {
-                candidateName = "\(base) \(counter)"
-            } else {
-                candidateName = "\(base) \(counter).\(ext)"
-            }
-
-            let candidate = directory.appendingPathComponent(candidateName)
-            if !FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
-            }
-
-            counter += 1
-        }
+        loadFiles()
+        return true
     }
 
     private func handleSelect(_ file: FileItem, extend: Bool) {
+        onInteraction?()
         let now = ProcessInfo.processInfo.systemUptime
 
         if extend {
@@ -674,6 +699,10 @@ struct FileBrowserView: View {
 
         case .openInTerminal:
             openCurrentPathInTerminal()
+
+        case .openPathPrompt:
+            openPathPromptText = ""
+            showOpenPathPrompt = true
         }
 
         commandNonce = UUID()
@@ -695,6 +724,8 @@ struct FileBrowserView: View {
 
     @ViewBuilder
     private func contextMenuForFile(_ file: FileItem) -> some View {
+        creationContextMenuItems()
+        Divider()
         Button("Open") { handleOpen(file) }
         Button("Open With...") {
             NSWorkspace.shared.open(
@@ -771,6 +802,16 @@ struct FileBrowserView: View {
         }
     }
 
+    @ViewBuilder
+    private func creationContextMenuItems() -> some View {
+        Button("Add File") {
+            NotificationCenter.default.post(name: .createNewFile, object: nil)
+        }
+        Button("Add Folder") {
+            NotificationCenter.default.post(name: .createNewFolder, object: nil)
+        }
+    }
+
     private func isMediaFile(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
         let mediaExts = ["mp4", "mov", "m4v", "avi", "mkv", "webm", "mp3", "m4a", "wav", "flac", "ogg", "aac"]
@@ -842,6 +883,7 @@ struct FileBrowserView: View {
         let includeHidden = showHiddenFiles
         let currentSortColumn = sortColumn
         let currentSortAscending = sortAscending
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -857,20 +899,46 @@ struct FileBrowserView: View {
                 } else {
                     let fileManager = FileManager.default
                     let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
-                    let contents = try fileManager.contentsOfDirectory(
-                        at: targetPath,
-                        includingPropertiesForKeys: [
-                            .isDirectoryKey,
-                            .fileSizeKey,
-                            .contentModificationDateKey,
-                            .creationDateKey,
-                            .tagNamesKey,
-                        ],
-                        options: options
-                    )
 
-                    loadedFiles = contents.compactMap { FileItem.fromURL($0) }
-                    statuses = GitStatusProvider.status(for: targetPath)
+                    if !query.isEmpty {
+                        let enumerator = fileManager.enumerator(
+                            at: targetPath,
+                            includingPropertiesForKeys: [
+                                .isDirectoryKey,
+                                .fileSizeKey,
+                                .contentModificationDateKey,
+                                .creationDateKey,
+                                .tagNamesKey,
+                            ],
+                            options: options
+                        )
+
+                        var recursiveMatches: [FileItem] = []
+                        while let url = enumerator?.nextObject() as? URL {
+                            if url.lastPathComponent.localizedCaseInsensitiveContains(query),
+                               let item = FileItem.fromURL(url) {
+                                recursiveMatches.append(item)
+                            }
+                        }
+
+                        loadedFiles = recursiveMatches
+                        statuses = [:]
+                    } else {
+                        let contents = try fileManager.contentsOfDirectory(
+                            at: targetPath,
+                            includingPropertiesForKeys: [
+                                .isDirectoryKey,
+                                .fileSizeKey,
+                                .contentModificationDateKey,
+                                .creationDateKey,
+                                .tagNamesKey,
+                            ],
+                            options: options
+                        )
+
+                        loadedFiles = contents.compactMap { FileItem.fromURL($0) }
+                        statuses = GitStatusProvider.status(for: targetPath)
+                    }
                 }
 
                 let sortedFiles = Self.sortFiles(
@@ -1047,6 +1115,11 @@ struct PathBarView: View {
             .padding(.horizontal, 8)
         }
         .contextMenu {
+            Button("Open Path…") {
+                isEditing = true
+                editedPath = ""
+            }
+            Divider()
             Button("Copy Path") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(currentPath.path, forType: .string)
@@ -1058,17 +1131,22 @@ struct PathBarView: View {
                 NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: currentPath.path)
             }
             Divider()
-            Button("Go to Folder...") {
+            Button("Go to Folder…") {
                 isEditing = true
                 editedPath = currentPath.path
             }
         }
         .sheet(isPresented: $isEditing) {
-            PathEditorSheet(path: $editedPath, isEditing: $isEditing) { newPath in
-                let url = URL(fileURLWithPath: newPath)
-                if FileManager.default.fileExists(atPath: url.path) {
-                    currentPath = url
+            PathEditorSheet(
+                path: $editedPath,
+                isEditing: $isEditing,
+                baseDirectory: currentPath
+            ) { newPath in
+                guard let url = PathEditorSheet.resolvedURL(for: newPath, relativeTo: currentPath),
+                      FileManager.default.fileExists(atPath: url.path) else {
+                    return
                 }
+                currentPath = url
             }
         }
     }
@@ -1176,28 +1254,288 @@ struct PathComponentButton: View {
 struct PathEditorSheet: View {
     @Binding var path: String
     @Binding var isEditing: Bool
+    let baseDirectory: URL
     var onCommit: (String) -> Void
 
+    @State private var suggestions: [PathSuggestion] = []
+    @State private var selectedSuggestionIndex: Int = 0
+    @FocusState private var isPathFieldFocused: Bool
+
+    private struct PathSuggestion: Identifiable {
+        let id = UUID()
+        let displayPath: String
+        let completionName: String
+        let isDirectory: Bool
+    }
+
     var body: some View {
-        VStack {
-            Text("Go to Folder")
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Open Path")
                 .font(.headline)
-            TextField("Path", text: $path)
+
+            TextField("/Users/name/Folder", text: $path)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 400)
+                .focused($isPathFieldFocused)
+                .onSubmit {
+                    submitPath()
+                }
+
+            if !suggestions.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, suggestion in
+                            Button {
+                                applySuggestion(at: index)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: suggestion.isDirectory ? "folder" : "doc")
+                                        .foregroundColor(.secondary)
+                                    Text(suggestion.displayPath)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(index == selectedSuggestionIndex
+                                    ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.25)
+                                    : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 140)
+            }
+
+            Text("Tab: autocomplete • ↑/↓: pick suggestion")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             HStack {
                 Button("Cancel") {
                     isEditing = false
                 }
                 .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
                 Button("Go") {
-                    onCommit(path)
-                    isEditing = false
+                    submitPath()
                 }
                 .keyboardShortcut(.defaultAction)
             }
         }
+        .frame(width: 500)
         .padding()
+        .onAppear {
+            isPathFieldFocused = true
+            refreshSuggestions()
+        }
+        .onChange(of: path) { _, _ in
+            refreshSuggestions()
+        }
+        .onKeyPress(.tab) {
+            handleTabCompletion()
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            guard !suggestions.isEmpty else { return .ignored }
+            selectedSuggestionIndex = max(0, selectedSuggestionIndex - 1)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            guard !suggestions.isEmpty else { return .ignored }
+            selectedSuggestionIndex = min(suggestions.count - 1, selectedSuggestionIndex + 1)
+            return .handled
+        }
+    }
+
+    static func resolvedURL(for rawInput: String, relativeTo baseDirectory: URL) -> URL? {
+        let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.hasPrefix("~") {
+            let expanded = NSString(string: trimmed).expandingTildeInPath
+            return URL(fileURLWithPath: expanded).standardizedFileURL
+        }
+
+        if trimmed.hasPrefix("/") {
+            return URL(fileURLWithPath: trimmed).standardizedFileURL
+        }
+
+        return baseDirectory.appendingPathComponent(trimmed).standardizedFileURL
+    }
+
+    private func submitPath() {
+        onCommit(path)
+        isEditing = false
+    }
+
+    private func refreshSuggestions() {
+        suggestions = Self.pathSuggestions(for: path, relativeTo: baseDirectory)
+        if selectedSuggestionIndex >= suggestions.count {
+            selectedSuggestionIndex = max(0, suggestions.count - 1)
+        }
+    }
+
+    private func applySuggestion(at index: Int) {
+        guard suggestions.indices.contains(index) else { return }
+        path = suggestions[index].displayPath
+        selectedSuggestionIndex = index
+        refreshSuggestions()
+    }
+
+    private func handleTabCompletion() {
+        guard !suggestions.isEmpty else { return }
+
+        let fragment = Self.completionFragment(from: path)
+        let names = suggestions.map(\.completionName)
+        let prefix = Self.longestCommonPrefix(in: names)
+
+        if !fragment.isEmpty, prefix.count > fragment.count {
+            path = Self.replacingFragment(in: path, with: prefix)
+            refreshSuggestions()
+            return
+        }
+
+        applySuggestion(at: selectedSuggestionIndex)
+    }
+
+    private static func completionFragment(from raw: String) -> String {
+        let nsRaw = raw as NSString
+        if raw.hasSuffix("/") { return "" }
+        return nsRaw.lastPathComponent
+    }
+
+    private static func replacingFragment(in raw: String, with replacement: String) -> String {
+        if raw.hasSuffix("/") {
+            return raw + replacement
+        }
+
+        let nsRaw = raw as NSString
+        let dir = nsRaw.deletingLastPathComponent
+
+        if dir.isEmpty {
+            return replacement
+        }
+
+        if dir == "/" {
+            return "/" + replacement
+        }
+
+        return dir + "/" + replacement
+    }
+
+    private static func longestCommonPrefix(in names: [String]) -> String {
+        guard var prefix = names.first, !prefix.isEmpty else { return "" }
+
+        for name in names.dropFirst() {
+            while !name.hasPrefix(prefix) {
+                prefix.removeLast()
+                if prefix.isEmpty { return "" }
+            }
+        }
+
+        return prefix
+    }
+
+    private static func pathSuggestions(for rawInput: String, relativeTo baseDirectory: URL) -> [PathSuggestion] {
+        let raw = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let directoryRaw: String
+        let fragment: String
+
+        if raw.hasSuffix("/") {
+            directoryRaw = raw
+            fragment = ""
+        } else {
+            let nsRaw = raw as NSString
+            directoryRaw = nsRaw.deletingLastPathComponent
+            fragment = raw.isEmpty ? "" : nsRaw.lastPathComponent
+        }
+
+        let resolvedDirectory: URL
+        if raw.isEmpty {
+            resolvedDirectory = baseDirectory
+        } else if directoryRaw.isEmpty, !raw.hasPrefix("/") && !raw.hasPrefix("~") {
+            resolvedDirectory = baseDirectory
+        } else if let url = resolvedURL(for: directoryRaw.isEmpty ? raw : directoryRaw, relativeTo: baseDirectory) {
+            resolvedDirectory = raw.hasSuffix("/") ? url : url
+        } else {
+            resolvedDirectory = baseDirectory
+        }
+
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: resolvedDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        let normalizedFragment = fragment.lowercased()
+
+        return entries
+            .filter { entry in
+                let name = entry.lastPathComponent.lowercased()
+                return normalizedFragment.isEmpty || name.hasPrefix(normalizedFragment)
+            }
+            .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+            .map { entry in
+                let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                let name = entry.lastPathComponent
+                let dirPrefix = rawDirectoryPrefix(from: raw, fallbackDirectory: resolvedDirectory, baseDirectory: baseDirectory)
+                var display = dirPrefix
+
+                if !display.isEmpty && !display.hasSuffix("/") && display != "/" {
+                    display += "/"
+                }
+
+                if display == "/" {
+                    display += name
+                } else {
+                    display += name
+                }
+
+                if isDirectory {
+                    display += "/"
+                }
+
+                return PathSuggestion(displayPath: display, completionName: name, isDirectory: isDirectory)
+            }
+    }
+
+    private static func rawDirectoryPrefix(from raw: String, fallbackDirectory: URL, baseDirectory: URL) -> String {
+        if raw.isEmpty {
+            return ""
+        }
+
+        if raw.hasSuffix("/") {
+            return raw
+        }
+
+        let nsRaw = raw as NSString
+        let dir = nsRaw.deletingLastPathComponent
+
+        if !dir.isEmpty {
+            return dir
+        }
+
+        if raw.hasPrefix("/") {
+            return "/"
+        }
+
+        if raw.hasPrefix("~") {
+            return "~"
+        }
+
+        if fallbackDirectory.standardizedFileURL == baseDirectory.standardizedFileURL {
+            return ""
+        }
+
+        return fallbackDirectory.path
     }
 }
 
@@ -1348,7 +1686,9 @@ struct FileListView: View {
                             onSelect(file, NSEvent.modifierFlags.contains(.command))
                         }
                         .contextMenu { contextMenu(file) }
-                        .draggable(file.path) {
+                        .onDrag {
+                            NSItemProvider(object: file.path as NSURL)
+                        } preview: {
                             FileDragPreview(name: file.name, icon: file.nsImage)
                         }
                     }
@@ -1685,7 +2025,9 @@ struct IconGridView: View {
                             onSelect(file, NSEvent.modifierFlags.contains(.command))
                         }
                         .contextMenu { contextMenu(file) }
-                        .draggable(file.path) {
+                        .onDrag {
+                            NSItemProvider(object: file.path as NSURL)
+                        } preview: {
                             FileDragPreview(name: file.name, icon: file.nsImage)
                         }
                 }
