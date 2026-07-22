@@ -1,0 +1,36 @@
+# neutron
+think spacedrive but swift or forklift but free
+- [x] better finder ui
+    - [x] dual panes
+        - [x] each pane is independent in layout
+        - [x] clicking between panes highlights them allowing you to have two different folders open at once
+    - [x] tabs (per pane, can drag between panes)
+    - [x] configurable format of panes
+        - [ ] fix resizing problems causing panes to not shrink properly to fit a new size. this happens when there are 3+ panes in a row
+    - [ ] path bar - copy & open in terminal
+        - [x] can move up and down in pwd easily by clicking on next/previous item
+        - [ ] icons based on user's macos accent color
+- [x] hotkey anything you want
+- [ ] cloud drive management
+    - [x] unified search
+    - [x] Remote Connections
+        - [ ] SFTP, FTP, WebDav, Amazon S3, Backblaze B2, Google Drive, OneDrive, Dropbox, Rackspace Cloudfiles, SMB, AFP, and NFS
+- [ ] external downloads
+    - [ ] cli tools like ytdlp
+    - [x] torrents
+    - [x] download manager
+- [ ] better file management
+    - [ ] git support
+    - [ ] support for tags
+    - [ ] drag files between folders (even across different panes)
+- [ ] better search
+    - [ ] per pane searching
+    - [ ] better filters -> recursive searching (look in subdirs)
+    - [ ] remove weird lag while deleting search
+- [ ] preview pane
+    - [ ] audio/video playback
+    - [ ] edit text in files
+    - [ ] fix weird resizing causing some panes to have parts overlapped by other panes or the sidebar
+- [ ] command pallete
+- [ ] favorites section
+- [ ] add, edit, remove, search, or filter tags
