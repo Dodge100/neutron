@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Neutron — the open-source file manager for macOS." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
+  <title>neutron</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="page">
+    <div class="page-dots" aria-hidden="true"></div>
+
+    <main class="main">
+
+      <!-- ── Hero ──────────────────────────────────────────────── -->
+      <section class="hero">
+        <div class="container hero-inner">
+          <h1 class="hero-title display">
+            a file manager<br />that <em class="serif-accent">actually</em> works.
+          </h1>
+
+          <p class="hero-sub">
+            dual panes, cloud drives, git, downloads, command palette.
+            all native swift, all free, all open source.
+          </p>
+
+          <div class="hero-actions">
+            <a href="#download" class="btn btn-primary btn-lg">
+              download for mac
+            </a>
+            <a class="hero-source-link" href="https://github.com/neutron-app/neutron" target="_blank" rel="noopener noreferrer">
+              <svg class="hero-source-mark" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 007.86 10.93c.58.1.79-.25.79-.56v-2c-3.2.69-3.88-1.37-3.88-1.37-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.76 2.68 1.25 3.33.96.1-.75.4-1.25.72-1.54-2.55-.29-5.24-1.27-5.24-5.67 0-1.25.45-2.28 1.18-3.08-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.18a10.96 10.96 0 015.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.57.23 2.73.11 3.02.74.8 1.18 1.83 1.18 3.08 0 4.41-2.7 5.38-5.27 5.66.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56A11.5 11.5 0 0023.5 12C23.5 5.65 18.35.5 12 .5z"/>
+              </svg>
+              <span>source code</span>
+              <svg class="hero-source-arrow" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9"/></svg>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Screenshot ────────────────────────────────────────── -->
+      <section class="sec-screenshot">
+        <div class="container">
+          <div class="screenshot-frame">
+            <img src="screenshot.png" alt="neutron file manager" />
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Features ──────────────────────────────────────────── -->
+      <section class="sec-features">
+        <div class="container">
+          <div class="section-head">
+            <h2>one app, <em class="serif-accent">all</em> the tools.</h2>
+            <p>everything you need to <em class="serif-accent">move</em>, <em class="serif-accent">manage</em>, and <em class="serif-accent">build</em> — without leaving your file manager.</p>
+          </div>
+
+          <div class="features-columns">
+            <div class="features-col">
+              <h3 class="features-col-title">organize</h3>
+              <ul class="features-list">
+                <li><span class="feat-accent">dual panes</span> with independent tabs</li>
+                <li><span class="feat-accent">command palette</span> for instant access</li>
+                <li><span class="feat-accent">path bar</span> with terminal integration</li>
+                <li><span class="feat-accent">preview pane</span> with metadata</li>
+                <li><span class="feat-accent">unified search</span> across local + cloud</li>
+              </ul>
+            </div>
+
+            <div class="features-col">
+              <h3 class="features-col-title">connect</h3>
+              <ul class="features-list">
+                <li><span class="feat-accent">cloud drives</span> — s3, backblaze, gdrive, dropbox</li>
+                <li><span class="feat-accent">sftp, ftp, webdav, smb</span></li>
+                <li><span class="feat-accent">video downloads</span> via yt-dlp</li>
+                <li><span class="feat-accent">built-in torrent engine</span></li>
+                <li><span class="feat-accent">download manager</span> with queue + resume</li>
+              </ul>
+            </div>
+
+            <div class="features-col">
+              <h3 class="features-col-title">create</h3>
+              <ul class="features-list">
+                <li><span class="feat-accent">git panel</span> — stage, commit, push, pull</li>
+                <li><span class="feat-accent">branch switching</span> with ahead/behind</li>
+                <li><span class="feat-accent">git log</span> and history viewer</li>
+                <li><span class="feat-accent">media conversion</span> via ffmpeg</li>
+                <li><span class="feat-accent">context menus</span> on every action</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Customization ─────────────────────────────────────── -->
+      <section class="sec-custom">
+        <div class="container">
+          <div class="custom-layout">
+            <div class="custom-main">
+              <h2>make it <em class="serif-accent">yours.</em></h2>
+              <p>neutron adapts to you. remap every shortcut, rearrange the sidebar, toggle panels on or off. the shortcut recorder is built right into settings.</p>
+            </div>
+            <div class="custom-list">
+              <div class="custom-row">
+                <span class="custom-label">shortcuts</span>
+                <span class="custom-desc">remap any action to any key</span>
+              </div>
+              <div class="custom-row">
+                <span class="custom-label">sidebar</span>
+                <span class="custom-desc">show, hide, and reorder sections</span>
+              </div>
+              <div class="custom-row">
+                <span class="custom-label">views</span>
+                <span class="custom-desc">icons, list, or columns per folder</span>
+              </div>
+              <div class="custom-row">
+                <span class="custom-label">path bar</span>
+                <span class="custom-desc">toggle, copy paths, open terminal</span>
+              </div>
+              <div class="custom-row">
+                <span class="custom-label">status bar</span>
+                <span class="custom-desc">item counts, selection size</span>
+              </div>
+              <div class="custom-row">
+                <span class="custom-label">hidden files</span>
+                <span class="custom-desc">show by default or toggle on demand</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Cloud + Downloads ─────────────────────────────────── -->
+      <section class="sec-cloud">
+        <div class="container">
+          <div class="section-head">
+            <h2>cloud drives and downloads, <em class="serif-accent">built in.</em></h2>
+            <p>browse remote storage, grab videos, torrent files. no extra apps, no subscriptions.</p>
+          </div>
+
+          <div class="cloud-grid">
+            <div class="cloud-card tile">
+              <div class="cloud-card-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"/></svg>
+              </div>
+              <h3>cloud drives</h3>
+              <p>s3, backblaze, google drive, dropbox, onedrive, and more. one sidebar, one search.</p>
+            </div>
+            <div class="cloud-card tile">
+              <div class="cloud-card-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </div>
+              <h3>video downloads</h3>
+              <p>paste a link, grab a video. yt-dlp and ffmpeg under the hood.</p>
+            </div>
+            <div class="cloud-card tile">
+              <div class="cloud-card-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+              </div>
+              <h3>torrents</h3>
+              <p>built-in bitTorrent engine. no separate client needed.</p>
+            </div>
+            <div class="cloud-card tile">
+              <div class="cloud-card-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              </div>
+              <h3>download manager</h3>
+              <p>queue, prioritize, pause, resume. segmented downloads with retry.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Panes ─────────────────────────────────────────────── -->
+      <section class="sec-panes">
+        <div class="container">
+          <div class="panes-layout">
+            <div class="panes-visual">
+              <div class="placeholder-img"></div>
+            </div>
+            <div class="panes-text">
+              <h2>open as many panes<br />as <em class="serif-accent">you</em> want.</h2>
+              <p>every pane has its own set of tabs. split your workspace into as many sections as you need, each with multiple tabs inside. drag tabs between panes to rearrange everything.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Final CTA ─────────────────────────────────────────── -->
+      <section class="sec-cta" id="download">
+        <div class="container cta-inner">
+          <h2 class="cta-title display">finder but <em class="serif-accent">better.</em></h2>
+          <p class="cta-sub">neutron is free, open source and fast. install it, and let your files get to work.</p>
+          <div class="cta-actions">
+            <a href="#" class="btn btn-primary btn-lg">download neutron</a>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+  </div>
+
+
+</body>
+</html>
