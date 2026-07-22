@@ -11,10 +11,6 @@ import SwiftUI
 struct neutronApp: App {
     @StateObject private var shortcutManager = ShortcutManager.shared
 
-    init() {
-        MCPTaskManager.shared.taskProvider = DownloadManagerProvider.shared
-    }
-
     @ViewBuilder
     private func shortcutCommand(_ title: String, action: ShortcutAction) -> some View {
         Button(title) {
@@ -80,25 +76,6 @@ struct neutronApp: App {
             }
 
             CommandMenu("Tools") {
-                Button("Downloads…") {
-                    NotificationCenter.default.post(name: .showDownloadsPanel, object: nil)
-                }
-                .keyboardShortcut("j", modifiers: [.command, .option])
-
-                Button("Download Video URL…") {
-                    NotificationCenter.default.post(name: .showVideoDownload, object: nil)
-                }
-
-                Button("Add Magnet Link…") {
-                    NotificationCenter.default.post(name: .showTorrentMagnet, object: nil)
-                }
-
-                Button("Add Torrent File…") {
-                    NotificationCenter.default.post(name: .showTorrentFilePicker, object: nil)
-                }
-
-                Divider()
-
                 shortcutCommand("Open Terminal Here", action: .openTerminal)
             }
         }
@@ -107,11 +84,6 @@ struct neutronApp: App {
             SettingsView()
         }
 
-        // Downloads panel window
-        Window("Downloads", id: "downloads") {
-            TransferCenterView()
-        }
-        .defaultSize(width: 520, height: 620)
     }
 }
 

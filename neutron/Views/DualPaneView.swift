@@ -243,7 +243,7 @@ struct DualPaneView: View {
 
     var body: some View {
         let baseView = workspaceView
-            .toolbar {
+            .toolbar(id: "workspace-toolbar") {
                 toolbarContent
             }
             .onAppear(perform: handleAppear)
@@ -312,6 +312,7 @@ struct DualPaneView: View {
             }
 
         return commandView
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onReceive(NotificationCenter.default.publisher(for: .toggleRightPane)) { _ in
                 focusAdjacentPane()
             }
@@ -375,26 +376,31 @@ struct DualPaneView: View {
                     onPreviewSelectionChange: handlePreviewSelectionChange(for:item:),
                     onDropTab: handleDroppedTab(_:into:targetIndex:)
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
                 if canShowPreview {
                     Divider()
-                    if let previewItem = paneStates[focusedPaneID ?? UUID()]?.previewItem {
-                        FinderPreviewColumn(file: previewItem)
-                            .frame(width: effectivePreviewWidth)
-                            .onAppear {
-                                previewColumnWidth = Double(effectivePreviewWidth)
-                            }
+                    FinderPreviewColumn(
+                        file: paneStates[focusedPaneID ?? UUID()]?.previewItem,
+                        onRename: handlePreviewRename,
+                        onTagsChanged: handlePreviewTagsChanged,
+                        onRefresh: handlePreviewRefresh
+                    )
+                    .environmentObject(fileOps)
+                    .frame(width: effectivePreviewWidth)
+                    .onAppear {
+                        previewColumnWidth = Double(effectivePreviewWidth)
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .animation(.easeInOut(duration: 0.16), value: canShowPreview)
         }
     }
 
     @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
+    private var toolbarContent: some CustomizableToolbarContent {
+        ToolbarItem(id: "pane-management", placement: .navigation) {
             Menu {
                 Section("Add Pane") {
                     Button("Split Horizontally") {
@@ -446,7 +452,7 @@ struct DualPaneView: View {
             .help("Manage Panes")
         }
 
-        ToolbarItemGroup(placement: .primaryAction) {
+        ToolbarItem(id: "add-item", placement: .primaryAction) {
             Menu {
                 Button("File") {
                     NotificationCenter.default.post(name: .createNewFile, object: nil)
@@ -459,22 +465,45 @@ struct DualPaneView: View {
                 Label("Add", systemImage: "plus")
             }
             .help("Add File or Folder")
-
-            Divider()
-
-            ForEach(FileBrowserView.ViewMode.allCases, id: \.self) { mode in
-                Button {
-                    if let focusedPaneID {
-                        handleViewModeChange(for: focusedPaneID, to: mode)
-                    }
-                } label: {
-                    Image(systemName: mode.icon)
-                        .symbolVariant(focusedPane?.viewMode == mode ? .fill : .none)
-                }
-                .disabled(focusedPaneID == nil)
-                .help("\(mode.rawValue) View")
-            }
         }
+
+        ToolbarItem(id: "view-mode-icon", placement: .primaryAction) {
+            Button {
+                setFocusedPaneViewMode(.icon)
+            } label: {
+                Image(systemName: FileBrowserView.ViewMode.icon.icon)
+                    .symbolVariant(focusedPane?.viewMode == .icon ? .fill : .none)
+            }
+            .disabled(focusedPaneID == nil)
+            .help("Icon View")
+        }
+
+        ToolbarItem(id: "view-mode-list", placement: .primaryAction) {
+            Button {
+                setFocusedPaneViewMode(.list)
+            } label: {
+                Image(systemName: FileBrowserView.ViewMode.list.icon)
+                    .symbolVariant(focusedPane?.viewMode == .list ? .fill : .none)
+            }
+            .disabled(focusedPaneID == nil)
+            .help("List View")
+        }
+
+        ToolbarItem(id: "view-mode-column", placement: .primaryAction) {
+            Button {
+                setFocusedPaneViewMode(.column)
+            } label: {
+                Image(systemName: FileBrowserView.ViewMode.column.icon)
+                    .symbolVariant(focusedPane?.viewMode == .column ? .fill : .none)
+            }
+            .disabled(focusedPaneID == nil)
+            .help("Column View")
+        }
+    }
+
+    private func setFocusedPaneViewMode(_ mode: FileBrowserView.ViewMode) {
+        guard let focusedPaneID else { return }
+        handleViewModeChange(for: focusedPaneID, to: mode)
     }
 
     private func handleViewModeChange(for paneID: UUID, to newMode: FileBrowserView.ViewMode) {
@@ -578,6 +607,41 @@ private func handleCloseTab() {
         if focusedPaneID == paneID {
             sharedPreviewItem = item
         }
+    }
+
+    private func handlePreviewRename(_ url: URL, _ newName: String) {
+        if let newURL = fileOps.renameFile(at: url, to: newName) {
+            // Update preview item with new name
+            if let paneID = focusedPaneID, var preview = paneStates[paneID]?.previewItem {
+                let info = fileOps.getFileInfo(url: newURL)
+                let fileItem = FileItem.fromURL(newURL)
+                if let fileItem {
+                    paneStates[paneID]?.previewItem = FilePreviewItem(file: fileItem, info: info)
+                }
+            }
+            NotificationCenter.default.post(name: .refreshFiles, object: nil)
+        }
+    }
+
+    private func handlePreviewTagsChanged(_ url: URL, _ tags: [String]) {
+        var resourceValues = URLResourceValues()
+        resourceValues.tagNames = tags
+        var mutableURL = url
+        try? mutableURL.setResourceValues(resourceValues)
+
+        // Update preview item with new tags
+        if let paneID = focusedPaneID, var preview = paneStates[paneID]?.previewItem {
+            let info = fileOps.getFileInfo(url: url)
+            let fileItem = FileItem.fromURL(url)
+            if let fileItem {
+                paneStates[paneID]?.previewItem = FilePreviewItem(file: fileItem, info: info)
+            }
+        }
+        NotificationCenter.default.post(name: .refreshFiles, object: nil)
+    }
+
+    private func handlePreviewRefresh() {
+        NotificationCenter.default.post(name: .refreshFiles, object: nil)
     }
 
     private func selectTab(at index: Int, inOtherPane: Bool) {
@@ -897,6 +961,7 @@ struct PaneWorkspaceNodeView: View {
                         onDropTab(payload, paneID, targetIndex)
                     }
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
         case .split(_, let axis, let children):
@@ -924,7 +989,7 @@ struct PaneWorkspaceNodeView: View {
                             onPreviewSelectionChange: onPreviewSelectionChange,
                             onDropTab: onDropTab
                         )
-                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 180, maxHeight: .infinity, alignment: .topLeading)
                     )
                 }
             )
@@ -1001,6 +1066,7 @@ struct PaneSplitContainer: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(children.indices), id: \.self) { index in
@@ -1019,6 +1085,7 @@ struct PaneSplitContainer: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
         .onChange(of: children.count) { _, newCount in
@@ -1223,7 +1290,7 @@ struct WorkspacePaneContainerView: View {
 
     var body: some View {
         let baseView = paneContainer
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(
                 PanePointerFocusObserver(onPointerDown: onFocus)
             )
@@ -1268,7 +1335,7 @@ struct WorkspacePaneContainerView: View {
 
     @ViewBuilder
     private var paneContainer: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             PaneTabStripView(
                 paneID: paneID,
                 tabs: paneState.tabs,
@@ -1322,10 +1389,10 @@ struct WorkspacePaneContainerView: View {
 
             if let selectedTab = selectedTab {
                 tabContent(for: selectedTab)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 Color.clear
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
         .onAppear {
@@ -1571,8 +1638,9 @@ struct WorkspacePaneContainerView: View {
                 }
             }
 
+            let results = found
             await MainActor.run {
-                self.recursiveResults = found
+                self.recursiveResults = results
             }
         }
     }
@@ -1648,6 +1716,7 @@ private struct PaneTabStripView: View {
             .padding(.trailing, 8)
             .help("New Tab")
         }
+        .frame(maxWidth: .infinity)
         .frame(height: 28)
         .background(Color(nsColor: .windowBackgroundColor))
     }

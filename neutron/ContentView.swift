@@ -9,7 +9,6 @@ import SwiftUI
 import AppKit
 
 struct ContentView: View {
-    @Environment(\.openWindow) private var openWindow
     @StateObject private var fileOps = FileOperations()
     @StateObject private var cloudWorkspace = CloudWorkspaceStore.shared
 
@@ -131,7 +130,7 @@ struct ContentView: View {
     }
 
     @ToolbarContentBuilder
-    private var mainToolbar: some ToolbarContent {
+    private var mainToolbar: some CustomizableToolbarContent {
         ToolbarItem(id: "nav", placement: .navigation) {
             Section {
                 Button("Back", systemImage: "chevron.left") {
@@ -146,9 +145,6 @@ struct ContentView: View {
             }
         }
 
-        ToolbarItem(id: "space") {
-            Spacer()
-        }
         ToolbarItem(id: "toggleHidden") {
             Button {
                 showHiddenFiles.toggle()
@@ -182,20 +178,15 @@ struct ContentView: View {
                 )
             }
         }
-        ToolbarItem(id: "transfers") {
-            Button("Transfers", systemImage: "arrow.down.circle") {
-                openWindow(id: "downloads")
-            }
-            .help("Open Transfers")
-        }
     }
 
     private var scaffold: some View {
         navigationView
             .frame(minWidth: 900, minHeight: 620)
             .toolbar(removing: .sidebarToggle)
+            .toolbarRole(.editor)
             .environmentObject(fileOps)
-            .toolbar { mainToolbar }
+            .toolbar(id: "main-window-toolbar") { mainToolbar }
             .sheet(isPresented: $showNewFolderAlert) {
                 NewFolderSheet(
                     folderName: $newFolderName,
@@ -226,7 +217,7 @@ struct ContentView: View {
     }
 
     private func bindHandlers<Content: View>(to view: Content) -> some View {
-        bindTransferHandlers(to: bindNavigationHandlers(to: bindCreationHandlers(to: view)))
+        bindNavigationHandlers(to: bindCreationHandlers(to: view))
     }
 
     private func bindCreationHandlers<Content: View>(to view: Content) -> some View {
@@ -247,8 +238,10 @@ struct ContentView: View {
                 pushHistory(newPath)
             }
             .onChange(of: selectedSidebarPath) { _, newPath in
-                if let path = newPath {
-                    pushHistory(path)
+                // Sidebar selection flows through activePanePath so its onChange
+                // handles history — avoid double-pushing the same path.
+                if let path = newPath, path != activePanePath {
+                    activePanePath = path
                 }
             }
             .onChange(of: searchText) { _, _ in
@@ -270,34 +263,27 @@ struct ContentView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .goHome)) { _ in
-                selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser
+                let home = FileManager.default.homeDirectoryForCurrentUser
+                selectedSidebarPath = home
+                activePanePath = home
             }
             .onReceive(NotificationCenter.default.publisher(for: .goDesktop)) { _ in
-                selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+                let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+                selectedSidebarPath = desktop
+                activePanePath = desktop
             }
             .onReceive(NotificationCenter.default.publisher(for: .goDownloads)) { _ in
-                selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+                let downloads = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+                selectedSidebarPath = downloads
+                activePanePath = downloads
             }
             .onReceive(NotificationCenter.default.publisher(for: .goDocuments)) { _ in
-                selectedSidebarPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
+                let documents = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
+                selectedSidebarPath = documents
+                activePanePath = documents
             }
     }
 
-    private func bindTransferHandlers<Content: View>(to view: Content) -> some View {
-        view
-            .onReceive(NotificationCenter.default.publisher(for: .showDownloadsPanel)) { notification in
-                handleTransferWindowRequest(notification, replayName: nil)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .showVideoDownload)) { notification in
-                handleTransferWindowRequest(notification, replayName: .showVideoDownload)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .showTorrentMagnet)) { notification in
-                handleTransferWindowRequest(notification, replayName: .showTorrentMagnet)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .showTorrentFilePicker)) { notification in
-                handleTransferWindowRequest(notification, replayName: .showTorrentFilePicker)
-            }
-    }
 
     var body: some View {
         bindHandlers(to: scaffold)
@@ -341,6 +327,7 @@ struct ContentView: View {
         historyIndex -= 1
         let target = navigationHistory[historyIndex]
         selectedSidebarPath = target
+        activePanePath = target
     }
 
     private func goForward() {
@@ -348,6 +335,7 @@ struct ContentView: View {
         historyIndex += 1
         let target = navigationHistory[historyIndex]
         selectedSidebarPath = target
+        activePanePath = target
     }
 
     private func refreshCloudSearchResults() {
@@ -368,18 +356,6 @@ struct ContentView: View {
         }
     }
 
-    private func handleTransferWindowRequest(_ notification: Notification, replayName: Notification.Name?) {
-        if notification.userInfo?["replay"] as? Bool == true {
-            return
-        }
-
-        openWindow(id: "downloads")
-
-        guard let replayName else { return }
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(name: replayName, object: nil, userInfo: ["replay": true])
-        }
-    }
 }
 
 // MARK: - NewFolderSheet
