@@ -1,4 +1,5 @@
 import Foundation
+import CommonCrypto
 
 struct Bencode {
     static func decode(_ data: Data) -> BencodeValue? {
@@ -286,5 +287,3 @@ struct CryptoUtils {
         sha1(Data(string.utf8))
     }
 }
-
-import CommonCrypto

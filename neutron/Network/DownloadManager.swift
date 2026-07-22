@@ -1,12 +1,8 @@
 import Foundation
 import Combine
-
-protocol DownloadTaskDelegate: AnyObject {
-    func downloadTask(_ task: DownloadTask, didUpdateProgress progress: Double)
-    func downloadTask(_ task: DownloadTask, didUpdateSpeed speed: Double)
-    func downloadTask(_ task: DownloadTask, didCompleteWithError error: Error?)
-    func downloadTask(_ task: DownloadTask, didCompleteWithFile url: URL)
-}
+#if canImport(DownloadManagerCore)
+import DownloadManagerCore
+#endif
 
 final class DownloadTask: ObservableObject, Identifiable {
     let id: UUID
@@ -22,6 +18,10 @@ final class DownloadTask: ObservableObject, Identifiable {
     @Published var currentSpeedBytesPerSecond: Double = 0
     @Published var etaSeconds: TimeInterval?
     @Published var retryCount: Int = 0
+    @Published var scheduledAt: Date?
+    @Published var packageNameOverride: String?
+    @Published var priority: DownloadPriority = .normal
+    @Published var note: String = ""
 
     var maxRetries: Int = 5
 
@@ -35,7 +35,10 @@ final class DownloadTask: ObservableObject, Identifiable {
     }
 
     var packageName: String {
-        url.host ?? "General"
+        if let packageNameOverride, !packageNameOverride.isEmpty {
+            return packageNameOverride
+        }
+        return url.host ?? "General"
     }
 
     enum DownloadStatus: String {
@@ -43,15 +46,28 @@ final class DownloadTask: ObservableObject, Identifiable {
         case downloading
         case paused
         case repairing
+        case extracting
         case completed
         case failed
     }
 
-    init(id: UUID = UUID(), url: URL, destination: URL) {
+    init(
+        id: UUID = UUID(),
+        url: URL,
+        destination: URL,
+        scheduledAt: Date? = nil,
+        packageNameOverride: String? = nil,
+        priority: DownloadPriority = .normal,
+        note: String = ""
+    ) {
         self.id = id
         self.url = url
         self.destination = destination
         self.createdAt = Date()
+        self.scheduledAt = scheduledAt
+        self.packageNameOverride = packageNameOverride
+        self.priority = priority
+        self.note = note
     }
 }
 
@@ -67,6 +83,69 @@ final class DownloadManager: NSObject, ObservableObject {
         let downloadedBytes: Int64
         let completedAt: Date
         let wasResumed: Bool
+        let packageName: String?
+        let extractedPaths: [URL]
+        let priority: DownloadPriority
+        let note: String
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case url
+            case destination
+            case fileName
+            case totalBytes
+            case downloadedBytes
+            case completedAt
+            case wasResumed
+            case packageName
+            case extractedPaths
+            case priority
+            case note
+        }
+
+        init(
+            id: UUID,
+            url: URL,
+            destination: URL,
+            fileName: String,
+            totalBytes: Int64,
+            downloadedBytes: Int64,
+            completedAt: Date,
+            wasResumed: Bool,
+            packageName: String?,
+            extractedPaths: [URL],
+            priority: DownloadPriority,
+            note: String
+        ) {
+            self.id = id
+            self.url = url
+            self.destination = destination
+            self.fileName = fileName
+            self.totalBytes = totalBytes
+            self.downloadedBytes = downloadedBytes
+            self.completedAt = completedAt
+            self.wasResumed = wasResumed
+            self.packageName = packageName
+            self.extractedPaths = extractedPaths
+            self.priority = priority
+            self.note = note
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(UUID.self, forKey: .id)
+            url = try container.decode(URL.self, forKey: .url)
+            destination = try container.decode(URL.self, forKey: .destination)
+            fileName = try container.decode(String.self, forKey: .fileName)
+            totalBytes = try container.decode(Int64.self, forKey: .totalBytes)
+            downloadedBytes = try container.decode(Int64.self, forKey: .downloadedBytes)
+            completedAt = try container.decode(Date.self, forKey: .completedAt)
+            wasResumed = try container.decode(Bool.self, forKey: .wasResumed)
+            packageName = try container.decodeIfPresent(String.self, forKey: .packageName)
+            extractedPaths = try container.decodeIfPresent([URL].self, forKey: .extractedPaths) ?? []
+            priority = try container.decodeIfPresent(DownloadPriority.self, forKey: .priority) ?? .normal
+            note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+        }
 
         var progress: Double {
             guard totalBytes > 0 else { return 0 }
@@ -81,6 +160,96 @@ final class DownloadManager: NSObject, ObservableObject {
         var speedLimitBytesPerSecond: Int64
         var sourceSpeedLimits: [String: Int64]
         var sourceConnectionLimits: [String: Int]
+        var pauseModeEnabled: Bool
+        var pauseModeSpeedLimitBytesPerSecond: Int64
+        var autoExtractArchives: Bool
+        var packagizerRules: [DownloadPackagizerRule]
+        var queueOrder: DownloadQueueOrder
+        var preventDuplicateURLs: Bool
+        var filenamePrefixTemplate: String
+        var filenameSuffixTemplate: String
+        var defaultScheduleDelayMinutes: Int
+        var defaultMaxRetries: Int
+        var autoCleanupCompletedDays: Int
+
+        enum CodingKeys: String, CodingKey {
+            case maxSimultaneousDownloads
+            case multiConnectionEnabled
+            case connectionsPerDownload
+            case speedLimitBytesPerSecond
+            case sourceSpeedLimits
+            case sourceConnectionLimits
+            case pauseModeEnabled
+            case pauseModeSpeedLimitBytesPerSecond
+            case autoExtractArchives
+            case packagizerRules
+            case queueOrder
+            case preventDuplicateURLs
+            case filenamePrefixTemplate
+            case filenameSuffixTemplate
+            case defaultScheduleDelayMinutes
+            case defaultMaxRetries
+            case autoCleanupCompletedDays
+        }
+
+        init(
+            maxSimultaneousDownloads: Int,
+            multiConnectionEnabled: Bool,
+            connectionsPerDownload: Int,
+            speedLimitBytesPerSecond: Int64,
+            sourceSpeedLimits: [String: Int64],
+            sourceConnectionLimits: [String: Int],
+            pauseModeEnabled: Bool,
+            pauseModeSpeedLimitBytesPerSecond: Int64,
+            autoExtractArchives: Bool,
+            packagizerRules: [DownloadPackagizerRule],
+            queueOrder: DownloadQueueOrder,
+            preventDuplicateURLs: Bool,
+            filenamePrefixTemplate: String,
+            filenameSuffixTemplate: String,
+            defaultScheduleDelayMinutes: Int,
+            defaultMaxRetries: Int,
+            autoCleanupCompletedDays: Int
+        ) {
+            self.maxSimultaneousDownloads = maxSimultaneousDownloads
+            self.multiConnectionEnabled = multiConnectionEnabled
+            self.connectionsPerDownload = connectionsPerDownload
+            self.speedLimitBytesPerSecond = speedLimitBytesPerSecond
+            self.sourceSpeedLimits = sourceSpeedLimits
+            self.sourceConnectionLimits = sourceConnectionLimits
+            self.pauseModeEnabled = pauseModeEnabled
+            self.pauseModeSpeedLimitBytesPerSecond = pauseModeSpeedLimitBytesPerSecond
+            self.autoExtractArchives = autoExtractArchives
+            self.packagizerRules = packagizerRules
+            self.queueOrder = queueOrder
+            self.preventDuplicateURLs = preventDuplicateURLs
+            self.filenamePrefixTemplate = filenamePrefixTemplate
+            self.filenameSuffixTemplate = filenameSuffixTemplate
+            self.defaultScheduleDelayMinutes = defaultScheduleDelayMinutes
+            self.defaultMaxRetries = defaultMaxRetries
+            self.autoCleanupCompletedDays = autoCleanupCompletedDays
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            maxSimultaneousDownloads = try container.decode(Int.self, forKey: .maxSimultaneousDownloads)
+            multiConnectionEnabled = try container.decode(Bool.self, forKey: .multiConnectionEnabled)
+            connectionsPerDownload = try container.decode(Int.self, forKey: .connectionsPerDownload)
+            speedLimitBytesPerSecond = try container.decode(Int64.self, forKey: .speedLimitBytesPerSecond)
+            sourceSpeedLimits = try container.decodeIfPresent([String: Int64].self, forKey: .sourceSpeedLimits) ?? [:]
+            sourceConnectionLimits = try container.decodeIfPresent([String: Int].self, forKey: .sourceConnectionLimits) ?? [:]
+            pauseModeEnabled = try container.decodeIfPresent(Bool.self, forKey: .pauseModeEnabled) ?? false
+            pauseModeSpeedLimitBytesPerSecond = try container.decodeIfPresent(Int64.self, forKey: .pauseModeSpeedLimitBytesPerSecond) ?? (512 * 1024)
+            autoExtractArchives = try container.decodeIfPresent(Bool.self, forKey: .autoExtractArchives) ?? false
+            packagizerRules = try container.decodeIfPresent([DownloadPackagizerRule].self, forKey: .packagizerRules) ?? []
+            queueOrder = try container.decodeIfPresent(DownloadQueueOrder.self, forKey: .queueOrder) ?? DownloadQueueOrder()
+            preventDuplicateURLs = try container.decodeIfPresent(Bool.self, forKey: .preventDuplicateURLs) ?? false
+            filenamePrefixTemplate = try container.decodeIfPresent(String.self, forKey: .filenamePrefixTemplate) ?? ""
+            filenameSuffixTemplate = try container.decodeIfPresent(String.self, forKey: .filenameSuffixTemplate) ?? ""
+            defaultScheduleDelayMinutes = try container.decodeIfPresent(Int.self, forKey: .defaultScheduleDelayMinutes) ?? 0
+            defaultMaxRetries = try container.decodeIfPresent(Int.self, forKey: .defaultMaxRetries) ?? 5
+            autoCleanupCompletedDays = try container.decodeIfPresent(Int.self, forKey: .autoCleanupCompletedDays) ?? 0
+        }
     }
 
     struct PersistedSegment: Codable {
@@ -161,19 +330,73 @@ final class DownloadManager: NSObject, ObservableObject {
     @Published var sourceConnectionLimits: [String: Int] = [:] {
         didSet { saveManagerSettings() }
     }
+    @Published var pauseModeEnabled: Bool = false {
+        didSet {
+            saveManagerSettings()
+            if !pauseModeEnabled {
+                scheduleNextDownloads()
+            }
+        }
+    }
+    @Published var pauseModeSpeedLimitBytesPerSecond: Int64 = 512 * 1024 {
+        didSet {
+            pauseModeSpeedLimitBytesPerSecond = max(pauseModeSpeedLimitBytesPerSecond, 64 * 1024)
+            saveManagerSettings()
+        }
+    }
+    @Published var autoExtractArchives: Bool = false {
+        didSet { saveManagerSettings() }
+    }
+    @Published var packagizerRules: [DownloadPackagizerRule] = [] {
+        didSet { saveManagerSettings() }
+    }
+    @Published var preventDuplicateURLs: Bool = false {
+        didSet { saveManagerSettings() }
+    }
+    @Published var filenamePrefixTemplate: String = "" {
+        didSet { saveManagerSettings() }
+    }
+    @Published var filenameSuffixTemplate: String = "" {
+        didSet { saveManagerSettings() }
+    }
+    @Published var defaultScheduleDelayMinutes: Int = 0 {
+        didSet {
+            defaultScheduleDelayMinutes = max(defaultScheduleDelayMinutes, 0)
+            saveManagerSettings()
+        }
+    }
+    @Published var defaultMaxRetries: Int = 5 {
+        didSet {
+            defaultMaxRetries = min(max(defaultMaxRetries, 1), 20)
+            saveManagerSettings()
+        }
+    }
+    @Published var autoCleanupCompletedDays: Int = 0 {
+        didSet {
+            autoCleanupCompletedDays = max(autoCleanupCompletedDays, 0)
+            pruneCompletedTasksIfNeeded()
+            saveManagerSettings()
+        }
+    }
 
     private var urlSession: URLSession!
     private let queue = DispatchQueue(label: "com.neutron.downloadmanager", qos: .userInitiated)
     private let repairThreshold: Double = 0.9
     private let minimumSegmentSize: Int64 = 2 * 1024 * 1024
 
+    private let applicationSupportURL: URL = {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    }()
+
     private var queuedResumeData: [UUID: Data] = [:]
     private var queuedSegmentManifests: [UUID: SegmentResumeManifest] = [:]
     private var isThrottling = false
     private var throttledSources: Set<String> = []
+    private var queueOrder = DownloadQueueOrder()
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private var saveWorkItem: DispatchWorkItem?
 
     override init() {
         super.init()
@@ -188,12 +411,48 @@ final class DownloadManager: NSObject, ObservableObject {
         loadManagerSettings()
         loadCompletedTasks()
         loadPausedTasks()
+        pruneCompletedTasksIfNeeded()
     }
 
     // MARK: - Public API
 
     func startDownload(url: URL, destination: URL) -> DownloadTask {
-        let task = DownloadTask(url: url, destination: destination)
+        if preventDuplicateURLs, let existing = existingTask(for: url) {
+            return existing
+        }
+
+        let task = createManagedTask(url: url, destination: destination)
+        enqueueOrStart(task)
+        return task
+    }
+
+    func enqueueDownload(url: URL, destination: URL) -> DownloadTask {
+        if preventDuplicateURLs, let existing = existingTask(for: url) {
+            return existing
+        }
+
+        let task = createManagedTask(url: url, destination: destination)
+        task.status = .pending
+        return task
+    }
+
+    private func createManagedTask(url: URL, destination: URL) -> DownloadTask {
+        let templatedDestination = DownloadFileNameTemplate.apply(
+            destination: destination,
+            sourceURL: url,
+            prefixTemplate: filenamePrefixTemplate,
+            suffixTemplate: filenameSuffixTemplate
+        )
+        let packagized = DownloadPackagizer.apply(url: url, destination: templatedDestination, rules: packagizerRules)
+        let task = DownloadTask(
+            url: url,
+            destination: packagized.destination,
+            scheduledAt: DownloadSchedulePolicy.scheduledDate(defaultDelayMinutes: defaultScheduleDelayMinutes),
+            packageNameOverride: packagized.packageNameOverride,
+            priority: .normal,
+            note: ""
+        )
+        task.maxRetries = defaultMaxRetries
 
         let active = ActiveDownload(
             task: task,
@@ -207,14 +466,27 @@ final class DownloadManager: NSObject, ObservableObject {
         )
 
         activeTasks[task.id] = active
-        enqueueOrStart(task)
+        queueOrder.insertIfNeeded(task.id)
+        saveManagerSettings()
         return task
     }
 
+    private func existingTask(for url: URL) -> DownloadTask? {
+        activeTasks.values.map(\.task).first { $0.url.absoluteString == url.absoluteString }
+    }
+
     func resumeDownload(record: DownloadRecord) -> DownloadTask? {
-        let task = DownloadTask(id: record.id, url: record.url, destination: record.destination)
+        let task = DownloadTask(
+            id: record.id,
+            url: record.url,
+            destination: record.destination,
+            packageNameOverride: record.packageName,
+            priority: record.priority,
+            note: record.note
+        )
         task.downloadedBytes = record.downloadedBytes
         task.totalBytes = record.totalBytes
+        task.maxRetries = defaultMaxRetries
 
         let active = ActiveDownload(
             task: task,
@@ -228,6 +500,7 @@ final class DownloadManager: NSObject, ObservableObject {
         )
 
         activeTasks[task.id] = active
+        queueOrder.insertIfNeeded(task.id)
 
         if let manifest = loadSegmentManifest(for: record.id) {
             queuedSegmentManifests[task.id] = manifest
@@ -247,6 +520,8 @@ final class DownloadManager: NSObject, ObservableObject {
             active.task.status = .paused
             savePausedTask(makePausedRecord(from: active.task))
             activeTasks.removeValue(forKey: taskId)
+            queueOrder.remove(taskId)
+            saveManagerSettings()
             queuedResumeData.removeValue(forKey: taskId)
             cleanupTemporaryArtifacts(for: taskId)
             scheduleNextDownloads()
@@ -267,6 +542,8 @@ final class DownloadManager: NSObject, ObservableObject {
             saveSegmentManifest(makeSegmentManifest(from: pausedActive))
             savePausedTask(makePausedRecord(from: active.task))
             activeTasks.removeValue(forKey: taskId)
+            queueOrder.remove(taskId)
+            saveManagerSettings()
             scheduleNextDownloads()
             return
         }
@@ -280,6 +557,8 @@ final class DownloadManager: NSObject, ObservableObject {
                 self.saveResumeData(resumeData, for: taskId)
                 self.savePausedTask(self.makePausedRecord(from: active.task))
                 self.activeTasks.removeValue(forKey: taskId)
+                self.queueOrder.remove(taskId)
+                self.saveManagerSettings()
                 self.scheduleNextDownloads()
             }
         }
@@ -292,6 +571,8 @@ final class DownloadManager: NSObject, ObservableObject {
         active.segments.values.forEach { $0.urlTask?.cancel() }
 
         activeTasks.removeValue(forKey: taskId)
+        queueOrder.remove(taskId)
+        saveManagerSettings()
         queuedResumeData.removeValue(forKey: taskId)
         queuedSegmentManifests.removeValue(forKey: taskId)
         deleteResumeData(for: taskId)
@@ -326,12 +607,72 @@ final class DownloadManager: NSObject, ObservableObject {
         }
     }
 
-    func startDownloads(urls: [URL], destinationDirectory: URL) -> [DownloadTask] {
-        urls.map { url in
-            let fileName = url.lastPathComponent.isEmpty ? "download" : url.lastPathComponent
-            let destination = destinationDirectory.appendingPathComponent(fileName)
-            return startDownload(url: url, destination: destination)
+    func startDownloads(urls: [URL], destinationDirectory: URL, startImmediately: Bool = true) -> [DownloadTask] {
+        let existingURLs = Set(activeTasks.values.map { $0.task.url.absoluteString } + pausedTasks.map { $0.url.absoluteString })
+        let filteredURLs = DownloadDuplicatePolicy.filterIncomingURLs(
+            urls,
+            existingAbsoluteURLs: existingURLs,
+            preventDuplicates: preventDuplicateURLs
+        )
+
+        var reserved = Set<String>()
+        return filteredURLs.map { url in
+            let destination = DownloadLinkGrabber.destinationURL(
+                for: url,
+                baseDirectory: destinationDirectory,
+                existingPaths: reserved
+            )
+            reserved.insert(destination.path)
+            return startImmediately
+                ? startDownload(url: url, destination: destination)
+                : enqueueDownload(url: url, destination: destination)
         }
+    }
+
+    func setScheduledStart(taskId: UUID, date: Date?) {
+        guard let active = activeTasks[taskId] else { return }
+        active.task.scheduledAt = date
+        if active.task.status == .pending {
+            scheduleNextDownloads()
+        }
+    }
+
+    func moveQueuedTask(taskId: UUID, action: QueueMoveAction) {
+        queueOrder.move(taskId, action: action)
+        saveManagerSettings()
+    }
+
+    func addPackagizerRule(_ rule: DownloadPackagizerRule) {
+        packagizerRules.append(rule)
+    }
+
+    func removePackagizerRule(_ id: UUID) {
+        packagizerRules.removeAll { $0.id == id }
+    }
+
+    func setPriority(taskId: UUID, priority: DownloadPriority) {
+        guard let active = activeTasks[taskId] else { return }
+        active.task.priority = priority
+    }
+
+    func setNote(taskId: UUID, note: String) {
+        guard let active = activeTasks[taskId] else { return }
+        active.task.note = note
+    }
+
+    func pauseAllDownloads() {
+        let ids = Array(activeTasks.keys)
+        ids.forEach { pauseDownload(taskId: $0) }
+    }
+
+    func resumeAllDownloads() {
+        let records = pausedTasks
+        records.forEach { _ = resumeDownload(record: $0) }
+    }
+
+    func clearCompletedTasks() {
+        completedTasks = []
+        saveCompletedTasks()
     }
 
     var runningTasks: [DownloadTask] {
@@ -342,10 +683,15 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     var queuedTasks: [DownloadTask] {
-        activeTasks.values
+        let pending = activeTasks.values
             .map(\.task)
             .filter { $0.status == .pending }
-            .sorted { $0.createdAt < $1.createdAt }
+        return DownloadPriorityQueueSorter.sort(
+            pending,
+            priority: { $0.priority },
+            queueOrder: queueOrder,
+            fallback: { $0.createdAt < $1.createdAt }
+        )
     }
 
     var failedTasks: [DownloadTask] {
@@ -396,7 +742,8 @@ final class DownloadManager: NSObject, ObservableObject {
     private func enqueueOrStart(_ task: DownloadTask) {
         let source = sourceKey(for: task.url)
         if runningTasks.count < maxSimultaneousDownloads,
-           canStartTask(forSource: source) {
+           canStartTask(forSource: source),
+           DownloadStartPolicy.canStart(pauseModeEnabled: pauseModeEnabled, scheduledAt: task.scheduledAt) {
             startNetworkTask(for: task)
         } else {
             task.status = .pending
@@ -409,6 +756,7 @@ final class DownloadManager: NSObject, ObservableObject {
 
         for task in queuedTasks {
             guard free > 0 else { break }
+            guard DownloadStartPolicy.canStart(pauseModeEnabled: pauseModeEnabled, scheduledAt: task.scheduledAt) else { continue }
             let source = sourceKey(for: task.url)
             guard canStartTask(forSource: source) else { continue }
             startNetworkTask(for: task)
@@ -417,6 +765,11 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func startNetworkTask(for task: DownloadTask) {
+        guard DownloadStartPolicy.canStart(pauseModeEnabled: pauseModeEnabled, scheduledAt: task.scheduledAt) else {
+            task.status = .pending
+            return
+        }
+
         if let manifest = queuedSegmentManifests.removeValue(forKey: task.id) {
             startSegmentedDownloadTask(for: task, totalBytes: manifest.totalBytes, manifest: manifest)
             return
@@ -445,6 +798,10 @@ final class DownloadManager: NSObject, ObservableObject {
             guard let self else { return }
             DispatchQueue.main.async {
                 guard self.activeTasks[task.id] != nil else { return }
+                guard DownloadStartPolicy.canStart(pauseModeEnabled: self.pauseModeEnabled, scheduledAt: task.scheduledAt) else {
+                    task.status = .pending
+                    return
+                }
 
                 if canSegment,
                    totalBytes > self.minimumSegmentSize,
@@ -544,22 +901,15 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func preferredChunkSize(for totalBytes: Int64) -> Int64 {
-        let floor = max(minimumSegmentSize, 4 * 1024 * 1024)
-        let target = max(floor, totalBytes / Int64(max(connectionsPerDownload * 3, 1)))
-        return min(max(target, floor), 32 * 1024 * 1024)
+        DownloadSegmentPlanner.preferredChunkSize(
+            totalBytes: totalBytes,
+            connectionsPerDownload: connectionsPerDownload,
+            minimumSegmentSize: minimumSegmentSize
+        )
     }
 
     private func buildRanges(totalBytes: Int64, chunkSize: Int64) -> [ClosedRange<Int64>] {
-        guard totalBytes > 0 else { return [] }
-        var result: [ClosedRange<Int64>] = []
-        var start: Int64 = 0
-
-        while start < totalBytes {
-            let end = min(totalBytes - 1, start + max(chunkSize, 1) - 1)
-            result.append(start...end)
-            start = end + 1
-        }
-        return result
+        DownloadSegmentPlanner.buildRanges(totalBytes: totalBytes, chunkSize: chunkSize)
     }
 
     private func scheduleNextSegmentChunks(for taskId: UUID) {
@@ -651,13 +1001,20 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func enforceSpeedLimitsIfNeeded() {
-        if speedLimitBytesPerSecond > 0, !isThrottling {
+        let activeGlobalLimit: Int64 = {
+            if pauseModeEnabled {
+                return max(pauseModeSpeedLimitBytesPerSecond, 64 * 1024)
+            }
+            return speedLimitBytesPerSecond
+        }()
+
+        if activeGlobalLimit > 0, !isThrottling {
             let aggregateSpeed = runningTasks.reduce(0.0) { $0 + $1.currentSpeedBytesPerSecond }
-            if aggregateSpeed > Double(speedLimitBytesPerSecond) {
+            if aggregateSpeed > Double(activeGlobalLimit) {
                 isThrottling = true
                 throttleTasks(
                     matching: { _ in true },
-                    pauseDuration: throttlePauseDuration(current: aggregateSpeed, limit: Double(speedLimitBytesPerSecond))
+                    pauseDuration: throttlePauseDuration(current: aggregateSpeed, limit: Double(activeGlobalLimit))
                 ) { [weak self] in
                     self?.isThrottling = false
                 }
@@ -744,7 +1101,7 @@ final class DownloadManager: NSObject, ObservableObject {
 
     // MARK: - Completion / Failure
 
-    private func completeTask(_ task: DownloadTask) {
+    private func completeTask(_ task: DownloadTask, extractedPaths: [URL] = []) {
         let record = DownloadRecord(
             id: task.id,
             url: task.url,
@@ -753,20 +1110,53 @@ final class DownloadManager: NSObject, ObservableObject {
             totalBytes: task.totalBytes,
             downloadedBytes: task.downloadedBytes,
             completedAt: Date(),
-            wasResumed: task.retryCount > 0
+            wasResumed: task.retryCount > 0,
+            packageName: task.packageNameOverride,
+            extractedPaths: extractedPaths,
+            priority: task.priority,
+            note: task.note
         )
 
         completedTasks.insert(record, at: 0)
+        pruneCompletedTasksIfNeeded()
         saveCompletedTasks()
 
         activeTasks.removeValue(forKey: task.id)
+        queueOrder.remove(task.id)
         removePausedTask(task.id)
         deleteResumeData(for: task.id)
         queuedResumeData.removeValue(forKey: task.id)
         queuedSegmentManifests.removeValue(forKey: task.id)
         deleteSegmentManifest(for: task.id)
         cleanupTemporaryArtifacts(for: task.id)
+        saveManagerSettings()
         scheduleNextDownloads()
+    }
+
+    private func finalizeSuccessfulDownload(_ task: DownloadTask) {
+        if autoExtractArchives,
+           task.destination.pathExtension.lowercased() == "zip" {
+            task.status = .extracting
+            queue.async {
+                let extractDirectory = task.destination
+                    .deletingLastPathComponent()
+                    .appendingPathComponent(task.destination.deletingPathExtension().lastPathComponent, isDirectory: true)
+                let extracted = (try? DownloadArchiveExtractor.extractIfNeeded(
+                    sourceFileURL: task.destination,
+                    destinationDirectory: extractDirectory,
+                    isEnabled: true
+                )) == true
+
+                DispatchQueue.main.async {
+                    task.status = .completed
+                    self.completeTask(task, extractedPaths: extracted ? [extractDirectory] : [])
+                }
+            }
+            return
+        }
+
+        task.status = .completed
+        completeTask(task)
     }
 
     private func handleFailure(taskId: UUID, error: Error, resumeData: Data?) {
@@ -850,8 +1240,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     try FileManager.default.moveItem(at: localURL, to: task.destination)
 
                     DispatchQueue.main.async {
-                        task.status = .completed
-                        self.completeTask(task)
+                        self.finalizeSuccessfulDownload(task)
                     }
                 } else {
                     DispatchQueue.main.async {
@@ -926,8 +1315,7 @@ final class DownloadManager: NSObject, ObservableObject {
             }
 
             active.task.downloadedBytes = active.task.totalBytes
-            active.task.status = .completed
-            completeTask(active.task)
+            finalizeSuccessfulDownload(active.task)
         } catch {
             handleFailure(taskId: taskId, error: error, resumeData: nil)
         }
@@ -966,7 +1354,11 @@ final class DownloadManager: NSObject, ObservableObject {
             totalBytes: task.totalBytes,
             downloadedBytes: task.downloadedBytes,
             completedAt: Date(),
-            wasResumed: true
+            wasResumed: true,
+            packageName: task.packageNameOverride,
+            extractedPaths: [],
+            priority: task.priority,
+            note: task.note
         )
     }
 
@@ -1038,6 +1430,19 @@ final class DownloadManager: NSObject, ObservableObject {
         }
     }
 
+    private func pruneCompletedTasksIfNeeded() {
+        let pruned = DownloadHistoryCleanup.prune(
+            records: completedTasks,
+            keepingDays: autoCleanupCompletedDays,
+            date: { $0.completedAt }
+        )
+
+        if pruned.count != completedTasks.count {
+            completedTasks = pruned
+            saveCompletedTasks()
+        }
+    }
+
     private func savePausedTask(_ record: DownloadRecord) {
         pausedTasks.removeAll { $0.id == record.id }
         pausedTasks.append(record)
@@ -1074,17 +1479,36 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func saveManagerSettings() {
+        saveWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.performSaveManagerSettings()
+        }
+        saveWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
+    }
+
+    private func performSaveManagerSettings() {
         let settings = ManagerSettings(
             maxSimultaneousDownloads: maxSimultaneousDownloads,
             multiConnectionEnabled: multiConnectionEnabled,
             connectionsPerDownload: connectionsPerDownload,
             speedLimitBytesPerSecond: speedLimitBytesPerSecond,
             sourceSpeedLimits: sourceSpeedLimits,
-            sourceConnectionLimits: sourceConnectionLimits
+            sourceConnectionLimits: sourceConnectionLimits,
+            pauseModeEnabled: pauseModeEnabled,
+            pauseModeSpeedLimitBytesPerSecond: pauseModeSpeedLimitBytesPerSecond,
+            autoExtractArchives: autoExtractArchives,
+            packagizerRules: packagizerRules,
+            queueOrder: queueOrder,
+            preventDuplicateURLs: preventDuplicateURLs,
+            filenamePrefixTemplate: filenamePrefixTemplate,
+            filenameSuffixTemplate: filenameSuffixTemplate,
+            defaultScheduleDelayMinutes: defaultScheduleDelayMinutes,
+            defaultMaxRetries: defaultMaxRetries,
+            autoCleanupCompletedDays: autoCleanupCompletedDays
         )
 
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("neutron/downloads", isDirectory: true)
+        let dir = applicationSupportURL.appendingPathComponent("neutron/downloads", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("manager-settings.json")
 
@@ -1094,8 +1518,7 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private func loadManagerSettings() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let url = appSupport.appendingPathComponent("neutron/downloads/manager-settings.json")
+        let url = applicationSupportURL.appendingPathComponent("neutron/downloads/manager-settings.json")
 
         guard let data = try? Data(contentsOf: url),
               let settings = try? decoder.decode(ManagerSettings.self, from: data) else {
@@ -1108,6 +1531,17 @@ final class DownloadManager: NSObject, ObservableObject {
         speedLimitBytesPerSecond = max(settings.speedLimitBytesPerSecond, 0)
         sourceSpeedLimits = settings.sourceSpeedLimits
         sourceConnectionLimits = settings.sourceConnectionLimits
+        pauseModeEnabled = settings.pauseModeEnabled
+        pauseModeSpeedLimitBytesPerSecond = max(settings.pauseModeSpeedLimitBytesPerSecond, 64 * 1024)
+        autoExtractArchives = settings.autoExtractArchives
+        packagizerRules = settings.packagizerRules
+        queueOrder = settings.queueOrder
+        preventDuplicateURLs = settings.preventDuplicateURLs
+        filenamePrefixTemplate = settings.filenamePrefixTemplate
+        filenameSuffixTemplate = settings.filenameSuffixTemplate
+        defaultScheduleDelayMinutes = max(settings.defaultScheduleDelayMinutes, 0)
+        defaultMaxRetries = min(max(settings.defaultMaxRetries, 1), 20)
+        autoCleanupCompletedDays = max(settings.autoCleanupCompletedDays, 0)
     }
 
     // MARK: - Temp Artifacts
@@ -1144,8 +1578,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 try FileManager.default.moveItem(at: location, to: destination)
 
                 DispatchQueue.main.async {
-                    active.task.status = .completed
-                    self.completeTask(active.task)
+                    self.finalizeSuccessfulDownload(active.task)
                 }
             } catch {
                 DispatchQueue.main.async {

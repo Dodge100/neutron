@@ -22,7 +22,11 @@ final class DownloadManagerProvider: MCPTaskProvider {
             totalBytes: record.totalBytes,
             downloadedBytes: record.downloadedBytes,
             completedAt: Date(),
-            wasResumed: true
+            wasResumed: true,
+            packageName: nil,
+            extractedPaths: [],
+            priority: .normal,
+            note: ""
         )
 
         return downloadManager.resumeDownload(record: downloadRecord)?.id
