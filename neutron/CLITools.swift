@@ -65,10 +65,9 @@ class CLIToolManager: ObservableObject {
 
         do {
             try process.run()
-            process.waitUntilExit()
+            await process.waitUntilExitAsync()
 
             if process.terminationStatus == 0 {
-                // Tool exists, get version
                 return await getToolVersion(name)
             } else {
                 return .notInstalled
@@ -79,11 +78,11 @@ class CLIToolManager: ObservableObject {
     }
 
     private func getToolVersion(_ name: String) async -> ToolStatus {
-        let process = Process()
         let paths = ["/usr/local/bin/\(name)", "/opt/homebrew/bin/\(name)", "/usr/bin/\(name)"]
 
         for path in paths {
             if FileManager.default.fileExists(atPath: path) {
+                let process = Process()
                 process.executableURL = URL(fileURLWithPath: path)
                 process.arguments = ["--version"]
 
@@ -93,7 +92,7 @@ class CLIToolManager: ObservableObject {
 
                 do {
                     try process.run()
-                    process.waitUntilExit()
+                    await process.waitUntilExitAsync()
 
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()
                     if let output = String(data: data, encoding: .utf8) {
@@ -163,7 +162,7 @@ class CLIToolManager: ObservableObject {
             }
         }
 
-        process.waitUntilExit()
+        await process.waitUntilExitAsync()
 
         if process.terminationStatus != 0 {
             throw CLIToolError.executionFailed("ffmpeg exited with code \(process.terminationStatus)")
@@ -235,7 +234,7 @@ class CLIToolManager: ObservableObject {
             }
         }
 
-        process.waitUntilExit()
+        await process.waitUntilExitAsync()
 
         if process.terminationStatus != 0 {
             throw CLIToolError.executionFailed("yt-dlp exited with code \(process.terminationStatus)")
@@ -295,7 +294,9 @@ class CLIToolManager: ObservableObject {
 
                 engine.start(initialPeers: resolvedMagnet.initialPeers)
             case .file(let url):
-                let data = try Data(contentsOf: url)
+                let data = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: url)
+                }.value
                 guard let torrent = TorrentFile(data: data) else {
                     throw BitTorrentError.invalidTorrent
                 }
@@ -359,6 +360,16 @@ class CLIToolManager: ObservableObject {
             "/usr/bin/\(name)"
         ]
         return paths.first { FileManager.default.fileExists(atPath: $0) }
+    }
+}
+
+extension Process {
+    func waitUntilExitAsync() async {
+        await withCheckedContinuation { continuation in
+            self.terminationHandler = { _ in
+                continuation.resume()
+            }
+        }
     }
 }
 

@@ -133,13 +133,23 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
 
 // MARK: - Keyboard Shortcut Model
 
-struct NeutronShortcut: Codable, Equatable {
+struct NeutronShortcut: Codable, Hashable, Equatable {
     var key: KeyEquivalent
     var modifiers: SwiftUI.EventModifiers
-    
+
     init(key: KeyEquivalent, modifiers: SwiftUI.EventModifiers) {
         self.key = key
         self.modifiers = modifiers
+    }
+
+    // Manual Hashable conformance (EventModifiers doesn't conform to Hashable)
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(key.character)
+        hasher.combine(modifiers.rawValue)
+    }
+
+    static func == (lhs: NeutronShortcut, rhs: NeutronShortcut) -> Bool {
+        lhs.key == rhs.key && lhs.modifiers == rhs.modifiers
     }
 
     init?(event: NSEvent) {
@@ -275,12 +285,12 @@ class ShortcutManager: ObservableObject {
     
     private let userDefaultsKey = "customKeyboardShortcuts"
     private var eventMonitor: Any?
-
-    /// Actions handled by global event monitor (not SwiftUI menu commands)
-    private let monitoredActions: Set<ShortcutAction> = Set(ShortcutAction.allCases)
+    /// Lookup table built once on init/change: NeutronShortcut → action for O(1) dispatch.
+    private var shortcutLookup: [NeutronShortcut: ShortcutAction] = [:]
 
     init() {
         loadShortcuts()
+        rebuildShortcutLookup()
         installGlobalMonitor()
     }
 
@@ -290,6 +300,19 @@ class ShortcutManager: ObservableObject {
         }
     }
 
+    /// Rebuild the O(1) lookup dictionary from the active shortcut bindings.
+    /// Called after loading and after every mutation.
+    private func rebuildShortcutLookup() {
+        var lookup: [NeutronShortcut: ShortcutAction] = [:]
+        for action in ShortcutAction.allCases {
+            guard let bound = shortcut(for: action) else { continue }
+            // If two actions share the same shortcut, the last one wins — this is intentional
+            // (user's custom binding overrides the default).
+            lookup[bound] = action
+        }
+        shortcutLookup = lookup
+    }
+
     /// Install local event monitor that intercepts key events and triggers matching actions.
     /// This makes custom shortcuts work dynamically without restarting.
     private func installGlobalMonitor() {
@@ -297,14 +320,12 @@ class ShortcutManager: ObservableObject {
             guard let self else { return event }
             guard let pressed = NeutronShortcut(event: event) else { return event }
 
-            for action in ShortcutAction.allCases {
-                guard let bound = self.shortcut(for: action) else { continue }
-                if bound == pressed {
-                    // Only intercept if user has a custom binding OR if this is a non-menu shortcut
-                    if self.shortcuts[action] != nil || !self.hasMenuCommand(for: action) {
-                        action.trigger()
-                        return nil // consume event
-                    }
+            // O(1) lookup instead of iterating all actions
+            if let action = shortcutLookup[pressed] {
+                // Only intercept if user has a custom binding OR if this is a non-menu shortcut
+                if self.shortcuts[action] != nil || !self.hasMenuCommand(for: action) {
+                    action.trigger()
+                    return nil // consume event
                 }
             }
             return event
@@ -318,9 +339,9 @@ class ShortcutManager: ObservableObject {
              .toggleHidden, .splitPaneHorizontal, .splitPaneVertical,
              .viewAsIcons, .viewAsList, .viewAsColumns,
              .goBack, .goForward, .goUp, .goHome, .goDesktop, .goDownloads, .goDocuments, .goToFolder,
-             .openTerminal, .copy, .paste, .cut, .delete:
+             .openTerminal, .copy, .paste, .cut:
             return true
-        case .search, .quickLook, .getInfo, .rename, .refresh, .toggleRightPane, .commandPalette:
+        case .search, .quickLook, .getInfo, .rename, .refresh, .toggleRightPane, .commandPalette, .delete:
             return false
         }
     }
@@ -332,16 +353,19 @@ class ShortcutManager: ObservableObject {
     func setShortcut(_ shortcut: NeutronShortcut?, for action: ShortcutAction) {
         shortcuts[action] = shortcut
         saveShortcuts()
+        rebuildShortcutLookup()
     }
     
     func resetToDefault(action: ShortcutAction) {
         shortcuts.removeValue(forKey: action)
         saveShortcuts()
+        rebuildShortcutLookup()
     }
     
     func resetAllToDefaults() {
         shortcuts.removeAll()
         saveShortcuts()
+        rebuildShortcutLookup()
     }
     
     private func loadShortcuts() {

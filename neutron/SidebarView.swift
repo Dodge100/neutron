@@ -16,6 +16,7 @@ struct SidebarView: View {
     @State private var finderTags: [FinderTag] = []
     @StateObject private var cloudWorkspace = CloudWorkspaceStore.shared
     @StateObject private var favoritesStore = FavoritesStore.shared
+    @State private var resolvedFavoriteItems: [(label: String, systemImage: String, url: URL)] = []
     @AppStorage("showFavorites") private var showFavorites = true
     @AppStorage("showiCloud") private var showiCloud = true
     @AppStorage("showLocations") private var showLocations = true
@@ -30,30 +31,36 @@ struct SidebarView: View {
         var id: String { name }
     }
 
-    private var favoriteItems: [(label: String, systemImage: String, url: URL)] {
-        var items: [(label: String, systemImage: String, url: URL)] = [
-            ("Recents", "clock", VirtualLocation.recentsURL),
-            ("Applications", "app.dashed", URL(fileURLWithPath: "/Applications")),
-            ("Desktop", "desktopcomputer", homeDir.appendingPathComponent("Desktop")),
-            ("Documents", "doc", homeDir.appendingPathComponent("Documents")),
-            ("Downloads", "arrow.down.circle", homeDir.appendingPathComponent("Downloads")),
-            ("Home", "house", homeDir),
-            ("Movies", "film", homeDir.appendingPathComponent("Movies")),
-            ("Music", "music.note", homeDir.appendingPathComponent("Music")),
-            ("Pictures", "photo", homeDir.appendingPathComponent("Pictures")),
-        ].filter { item in
-            VirtualLocation.isRecents(item.url) || FileManager.default.fileExists(atPath: item.url.path)
-        }
+    private func refreshFavoriteItems() {
+        DispatchQueue.global(qos: .userInitiated).async { [homeDir, favoritesStore] in
+            var items: [(label: String, systemImage: String, url: URL)] = [
+                ("Recents", "clock", VirtualLocation.recentsURL),
+                ("Applications", "app.dashed", ApplicationDirectories.defaultApplicationsURL),
+                ("Desktop", "desktopcomputer", homeDir.appendingPathComponent("Desktop")),
+                ("Documents", "doc", homeDir.appendingPathComponent("Documents")),
+                ("Downloads", "arrow.down.circle", homeDir.appendingPathComponent("Downloads")),
+                ("Home", "house", homeDir),
+                ("Movies", "film", homeDir.appendingPathComponent("Movies")),
+                ("Music", "music.note", homeDir.appendingPathComponent("Music")),
+                ("Pictures", "photo", homeDir.appendingPathComponent("Pictures")),
+            ].filter { item in
+                if item.label == "Applications" {
+                    return true
+                }
+                return VirtualLocation.isRecents(item.url) || FileManager.default.fileExists(atPath: item.url.path)
+            }
 
-        // Append user custom favorites
-        for fav in favoritesStore.favorites {
-            let exists = FileManager.default.fileExists(atPath: fav.path)
-            guard exists else { continue }
-            guard !items.contains(where: { $0.url == fav }) else { continue }
-            items.append((fav.lastPathComponent, "folder", fav))
-        }
+            for fav in favoritesStore.favorites {
+                let exists = FileManager.default.fileExists(atPath: fav.path)
+                guard exists else { continue }
+                guard !items.contains(where: { $0.url == fav }) else { continue }
+                items.append((fav.lastPathComponent, "folder", fav))
+            }
 
-        return items
+            DispatchQueue.main.async {
+                self.resolvedFavoriteItems = items
+            }
+        }
     }
 
     private var hasICloudDrive: Bool {
@@ -65,7 +72,7 @@ struct SidebarView: View {
             // MARK: - Favorites
             if showFavorites {
             Section("Favorites") {
-                ForEach(favoriteItems, id: \.url) { item in
+                ForEach(resolvedFavoriteItems, id: \.url) { item in
                     Label(item.label, systemImage: item.systemImage)
                         .tag(item.url)
                         .dropDestination(for: URL.self) { urls, _ in
@@ -172,9 +179,14 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .frame(minWidth: 170)
         .onAppear {
+            ApplicationDirectories.ensureUserApplicationsDirectoryExists()
             refreshVolumes()
             cloudWorkspace.refreshAccountConnections()
             refreshFinderTags()
+            refreshFavoriteItems()
+        }
+        .onReceive(favoritesStore.$favorites) { _ in
+            refreshFavoriteItems()
         }
     }
 

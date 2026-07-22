@@ -30,6 +30,25 @@ struct FileInfo {
     let isDirectory: Bool
     let permissions: String
     let itemCount: Int?
+    let extension_: String
+    let mimeType: String
+    let accessed: Date?
+    let hardLinks: Int?
+    let inode: UInt64?
+    let device: UInt64?
+    let mode: UInt32?
+    let ownerRead: Bool
+    let ownerWrite: Bool
+    let ownerExecute: Bool
+    let groupRead: Bool
+    let groupWrite: Bool
+    let groupExecute: Bool
+    let otherRead: Bool
+    let otherWrite: Bool
+    let otherExecute: Bool
+    let isHidden: Bool
+    let isSymbolicLink: Bool
+    let sizeOnDisk: Int64?
 }
 
 // MARK: - FileOperations
@@ -183,12 +202,13 @@ class FileOperations: ObservableObject {
     func duplicateFiles(urls: [URL], in directory: URL) {
         let fileManager = FileManager.default
         for url in urls {
-            let baseName = url.deletingPathExtension().lastPathComponent
             let ext = url.pathExtension
-            let copyName = ext.isEmpty
-                ? "\(baseName) copy"
-                : "\(baseName) copy.\(ext)"
-            let destURL = directory.appendingPathComponent(copyName)
+            let baseName = url.deletingPathExtension().lastPathComponent
+            let copyName = ext.isEmpty ? "\(baseName) copy" : "\(baseName) copy.\(ext)"
+            var destURL = directory.appendingPathComponent(copyName)
+            if fileManager.fileExists(atPath: destURL.path) {
+                destURL = uniqueDestinationURL(for: url, in: directory)
+            }
             do {
                 try fileManager.copyItem(at: url, to: destURL)
                 invalidateCache(for: destURL)
@@ -211,7 +231,8 @@ class FileOperations: ObservableObject {
     }
 
     func getFileInfo(url: URL) -> FileInfo? {
-        if let cached = infoCache.object(forKey: url as NSURL) {
+        let standardized = url.standardizedFileURL
+        if let cached = infoCache.object(forKey: standardized as NSURL) {
             return cached.info
         }
 
@@ -240,6 +261,57 @@ class FileOperations: ObservableObject {
                 itemCount = contents?.count
             }
 
+            let extension_ = url.pathExtension.isEmpty ? "--" : ".\(url.pathExtension)"
+
+            let mimeType: String
+            if let utType = UTType(filenameExtension: url.pathExtension) {
+                mimeType = utType.preferredMIMEType ?? "--"
+            } else {
+                mimeType = "--"
+            }
+
+            var accessed: Date?
+            var hardLinks: Int?
+            var inode: UInt64?
+            var device: UInt64?
+            var mode: mode_t = mode_t(posixPermissions)
+            var ownerRead  = (mode & S_IRUSR) != 0
+            var ownerWrite = (mode & S_IWUSR) != 0
+            var ownerExec  = (mode & S_IXUSR) != 0
+            var groupRead  = (mode & S_IRGRP) != 0
+            var groupWrite = (mode & S_IWGRP) != 0
+            var groupExec  = (mode & S_IXGRP) != 0
+            var otherRead  = (mode & S_IROTH) != 0
+            var otherWrite = (mode & S_IWOTH) != 0
+            var otherExec  = (mode & S_IXOTH) != 0
+
+            var statInfo = stat()
+            let statSucceeded = stat(url.path, &statInfo) == 0
+            if statSucceeded {
+                accessed = Date(timeIntervalSince1970: TimeInterval(statInfo.st_atimespec.tv_sec))
+                hardLinks = Int(statInfo.st_nlink)
+                inode = statInfo.st_ino
+                device = UInt64(statInfo.st_dev)
+                mode = statInfo.st_mode
+                ownerRead  = (mode & S_IRUSR) != 0
+                ownerWrite = (mode & S_IWUSR) != 0
+                ownerExec  = (mode & S_IXUSR) != 0
+                groupRead  = (mode & S_IRGRP) != 0
+                groupWrite = (mode & S_IWGRP) != 0
+                groupExec  = (mode & S_IXGRP) != 0
+                otherRead  = (mode & S_IROTH) != 0
+                otherWrite = (mode & S_IWOTH) != 0
+                otherExec  = (mode & S_IXOTH) != 0
+            }
+
+            let symlinkExists = attributes[.type] as? FileAttributeType == .typeSymbolicLink
+            let sizeOnDisk: Int64?
+            if statSucceeded && !isDirectory {
+                sizeOnDisk = Int64(statInfo.st_blocks) * 512
+            } else {
+                sizeOnDisk = nil
+            }
+
             let info = FileInfo(
                 name: url.lastPathComponent,
                 path: url.path,
@@ -249,9 +321,28 @@ class FileOperations: ObservableObject {
                 kind: kind,
                 isDirectory: isDirectory,
                 permissions: permissions,
-                itemCount: itemCount
+                itemCount: itemCount,
+                extension_: extension_,
+                mimeType: mimeType,
+                accessed: accessed,
+                hardLinks: hardLinks,
+                inode: inode,
+                device: device,
+                mode: UInt32(mode),
+                ownerRead: ownerRead,
+                ownerWrite: ownerWrite,
+                ownerExecute: ownerExec,
+                groupRead: groupRead,
+                groupWrite: groupWrite,
+                groupExecute: groupExec,
+                otherRead: otherRead,
+                otherWrite: otherWrite,
+                otherExecute: otherExec,
+                isHidden: url.lastPathComponent.hasPrefix("."),
+                isSymbolicLink: symlinkExists,
+                sizeOnDisk: sizeOnDisk
             )
-            infoCache.setObject(FileInfoCacheEntry(info: info), forKey: url as NSURL)
+            infoCache.setObject(FileInfoCacheEntry(info: info), forKey: standardized as NSURL)
             return info
         } catch {
             lastError = "Failed to get info for \(url.lastPathComponent): \(error.localizedDescription)"
@@ -260,8 +351,8 @@ class FileOperations: ObservableObject {
     }
 
     private func invalidateCache(for url: URL) {
-        infoCache.removeObject(forKey: url as NSURL)
-        infoCache.removeObject(forKey: url.deletingLastPathComponent() as NSURL)
+        infoCache.removeObject(forKey: url.standardizedFileURL as NSURL)
+        infoCache.removeObject(forKey: url.deletingLastPathComponent().standardizedFileURL as NSURL)
     }
 
     private func uniqueDestinationURL(for source: URL, in directory: URL) -> URL {
@@ -269,7 +360,8 @@ class FileOperations: ObservableObject {
         let base = source.deletingPathExtension().lastPathComponent
 
         var counter = 2
-        while true {
+        let maxAttempts = 1000
+        while counter <= maxAttempts {
             let candidateName: String
             if ext.isEmpty {
                 candidateName = "\(base) \(counter)"
@@ -284,6 +376,14 @@ class FileOperations: ObservableObject {
 
             counter += 1
         }
+
+        let fallbackName: String
+        if ext.isEmpty {
+            fallbackName = "\(base) \(UUID().uuidString.prefix(8))"
+        } else {
+            fallbackName = "\(base) \(UUID().uuidString.prefix(8)).\(ext)"
+        }
+        return directory.appendingPathComponent(fallbackName)
     }
 }
 

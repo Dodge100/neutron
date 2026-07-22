@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     var body: some View {
@@ -48,8 +49,18 @@ struct GeneralSettingsView: View {
     @AppStorage("showStatusBarInPanes") private var showStatusBarInPanes = true
     @AppStorage("syncPaneViewModes") private var syncPaneViewModes = false
     @AppStorage("confirmBeforeDelete") private var confirmBeforeDelete = true
+    @AppStorage("downloadDefaultPath") private var downloadDefaultPath: String = ""
+
+    @State private var showDownloadFolderPicker = false
 
     private let startupLocations = SidebarDataProvider.availableStartLocations()
+
+    private var downloadFolderURL: URL {
+        if !downloadDefaultPath.isEmpty {
+            return URL(fileURLWithPath: downloadDefaultPath)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+    }
 
     var body: some View {
         Form {
@@ -67,10 +78,25 @@ struct GeneralSettingsView: View {
                 Toggle("Ask before moving items to Trash", isOn: $confirmBeforeDelete)
             }
 
+            Section("Downloads") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Default save location")
+                        Text(downloadFolderURL.path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                    Button("Choose…") { showDownloadFolderPicker = true }
+                }
+            }
+
             Section("Icon View") {
                 HStack {
                     Text("Icon size")
-                    Slider(value: $iconSize, in: 32...128, step: 16)
+                    Slider(value: $iconSize, in: 48...96, step: 4)
                     Text("\(Int(iconSize))")
                         .frame(width: 40, alignment: .trailing)
                         .foregroundStyle(.secondary)
@@ -85,6 +111,15 @@ struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .fileImporter(
+            isPresented: $showDownloadFolderPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                downloadDefaultPath = url.path
+            }
+        }
     }
 }
 

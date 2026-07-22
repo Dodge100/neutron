@@ -45,30 +45,158 @@ enum VirtualLocation {
     }
 }
 
+enum ApplicationDirectories {
+    nonisolated static var userApplicationsURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications", isDirectory: true)
+            .standardizedFileURL
+    }
+
+    nonisolated static let localApplicationsURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+    nonisolated static let systemApplicationsURL = URL(fileURLWithPath: "/System/Applications", isDirectory: true)
+
+    nonisolated static var defaultApplicationsURL: URL {
+        userApplicationsURL
+    }
+
+    nonisolated static func ensureUserApplicationsDirectoryExists() {
+        let fileManager = FileManager.default
+        let url = userApplicationsURL
+        var isDirectory: ObjCBool = false
+
+        if fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+            return
+        }
+
+        try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
+    nonisolated static func isApplicationsRoot(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        return discoveredRoots(includeMissing: true).contains { $0.path == path }
+    }
+
+    nonisolated static func mergedImmediateContents(includeHidden: Bool) -> [URL] {
+        let fileManager = FileManager.default
+        let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
+
+        var results: [URL] = []
+        var seenNames: Set<String> = []
+
+        for root in discoveredRoots(includeMissing: false) {
+            guard let entries = try? fileManager.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: options
+            ) else {
+                continue
+            }
+
+            for entry in entries {
+                let nameKey = entry.lastPathComponent.lowercased()
+                guard seenNames.insert(nameKey).inserted else { continue }
+                results.append(entry.standardizedFileURL)
+            }
+        }
+
+        return results
+    }
+
+    nonisolated static func discoveredRoots(includeMissing: Bool) -> [URL] {
+        let fileManager = FileManager.default
+        let domainMasks: [FileManager.SearchPathDomainMask] = [
+            .userDomainMask,
+            .localDomainMask,
+            .systemDomainMask,
+        ]
+
+        var candidates: [URL] = [
+            userApplicationsURL,
+            localApplicationsURL.standardizedFileURL,
+            systemApplicationsURL.standardizedFileURL,
+        ]
+
+        for mask in domainMasks {
+            candidates.append(contentsOf: fileManager.urls(for: .applicationDirectory, in: mask).map { $0.standardizedFileURL })
+        }
+
+        var seenPaths = Set<String>()
+        let deduplicated = candidates.filter { url in
+            seenPaths.insert(url.path).inserted
+        }
+
+        if includeMissing {
+            return deduplicated
+        }
+
+        return deduplicated.filter { url in
+            var isDirectory: ObjCBool = false
+            return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+    }
+}
+
 enum SidebarDataProvider {
+    // MARK: - Scan Cache
+
+    nonisolated private static let scanCacheTTL: TimeInterval = 30
+    nonisolated private static let scanCacheQueue = DispatchQueue(label: "com.neutron.sidebar-scan-cache", qos: .utility, attributes: .concurrent)
+    nonisolated(unsafe) private static var cachedAllFiles: [FileItem]?
+    nonisolated(unsafe) private static var cachedAllFilesTimestamp: Date?
+
+    nonisolated private static func getAllFiles() -> [FileItem] {
+        // Fast path: read from cache without barrier
+        let cachedResult: [FileItem]? = scanCacheQueue.sync {
+            if let cached = cachedAllFiles,
+               let timestamp = cachedAllFilesTimestamp,
+               -timestamp.timeIntervalSinceNow < scanCacheTTL {
+                return cached
+            }
+            return nil
+        }
+        if let cachedResult {
+            return cachedResult
+        }
+
+        // Slow path: scan outside the lock, then write result with barrier
+        let results = scanFiles(maxVisited: 4000) { _ in true }
+        scanCacheQueue.sync(flags: .barrier) {
+            cachedAllFiles = results
+            cachedAllFilesTimestamp = Date()
+        }
+        return results
+    }
+
+    nonisolated static func invalidateScanCache() {
+        scanCacheQueue.sync(flags: .barrier) {
+            cachedAllFiles = nil
+            cachedAllFilesTimestamp = nil
+        }
+    }
+
     nonisolated static func recentFiles(limit: Int = 150) -> [FileItem] {
-        scanFiles(maxVisited: 4000) { _ in true }
+        getAllFiles()
             .sorted(by: recencySort)
             .prefix(limit)
             .map { $0 }
     }
 
     nonisolated static func taggedFiles(named tagName: String, limit: Int = 300) -> [FileItem] {
-        scanFiles(maxVisited: 4000) { item in
-            item.tags.contains { $0.caseInsensitiveCompare(tagName) == .orderedSame }
-        }
-        .sorted(by: recencySort)
-        .prefix(limit)
-        .map { $0 }
+        getAllFiles()
+            .filter { item in
+                item.tags.contains { $0.caseInsensitiveCompare(tagName) == .orderedSame }
+            }
+            .sorted(by: recencySort)
+            .prefix(limit)
+            .map { $0 }
     }
 
     nonisolated static func discoveredTags(limit: Int = 24) -> [String] {
         var counts: [String: Int] = [:]
-        _ = scanFiles(maxVisited: 4000) { item in
+        for item in getAllFiles() {
             for tag in item.tags where !tag.isEmpty {
                 counts[tag, default: 0] += 1
             }
-            return false
         }
 
         return counts
