@@ -184,15 +184,6 @@ struct PaletteCommand: Identifiable {
             ))
         }
 
-        // Downloads
-        commands.append(PaletteCommand(
-            title: "Open Downloads",
-            icon: "arrow.down.circle",
-            category: "Tools",
-            shortcutDisplay: "⌥⌘J",
-            action: { NotificationCenter.default.post(name: .showDownloadsPanel, object: nil) }
-        ))
-
         return commands
     }
 }

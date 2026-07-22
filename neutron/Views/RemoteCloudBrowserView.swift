@@ -225,15 +225,19 @@ struct RemoteCloudBrowserView: View {
         defer { isOpeningFile = false }
 
         let baseName = file.name.isEmpty ? "download" : file.name
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathComponent(baseName)
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("neutron-cloud-\(UUID().uuidString)")
+        let tempURL = tempDir.appendingPathComponent(baseName)
 
         do {
-            try FileManager.default.createDirectory(at: tempURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
             try await service.downloadFile(file, to: tempURL)
             NSWorkspace.shared.open(tempURL)
+            // Clean up after the file has likely been loaded into memory (5 min)
+            try? await Task.sleep(for: .seconds(300))
+            try? FileManager.default.removeItem(at: tempDir)
         } catch {
+            try? FileManager.default.removeItem(at: tempDir)
             errorMessage = error.localizedDescription
         }
     }

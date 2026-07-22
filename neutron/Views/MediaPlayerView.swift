@@ -47,6 +47,7 @@ struct MediaPreviewPanel: View {
     @State private var volume: Float = 1.0
     @State private var isMuted = false
     @State private var showControls = true
+    @State private var timeObserverToken: Any?
     @Binding var isPresented: Bool
     
     private var mediaType: MediaType {
@@ -101,6 +102,7 @@ struct MediaPreviewPanel: View {
             setupPlayer()
         }
         .onDisappear {
+            removeTimeObserver()
             player?.pause()
             player = nil
         }
@@ -257,14 +259,19 @@ struct MediaPreviewPanel: View {
     private func setupPlayer() {
         guard mediaType == .video || mediaType == .audio else { return }
         
+        // Remove any previous observer before creating a new player
+        removeTimeObserver()
+        
         let avPlayer = AVPlayer(url: url)
         player = avPlayer
         
-        // Observe playback time
+        // Observe playback time — capture @State storage (not struct self)
         let interval = CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-        avPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [self] time in
-            currentTime = time.seconds
+        let observer = avPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak avPlayer] time in
+            guard avPlayer != nil else { return }
+            self.currentTime = time.seconds
         }
+        timeObserverToken = observer
         
         // Get duration
         Task {
@@ -272,13 +279,19 @@ struct MediaPreviewPanel: View {
                 do {
                     let d = try await asset.load(.duration)
                     await MainActor.run {
-                        duration = d.seconds
+                        self.duration = d.seconds
                     }
                 } catch {
                     // Ignore
                 }
             }
         }
+    }
+    
+    private func removeTimeObserver() {
+        guard let token = timeObserverToken, let avPlayer = player else { return }
+        avPlayer.removeTimeObserver(token)
+        timeObserverToken = nil
     }
     
     private func togglePlayPause() {

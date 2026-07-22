@@ -584,7 +584,7 @@ final class RemoteGoogleDriveService: OAuthBackedCloudService {
                 path: $0.id,
                 isDirectory: $0.mimeType == "application/vnd.google-apps.folder",
                 sizeBytes: Int64($0.size ?? "0") ?? 0,
-                modified: ISO8601DateFormatter().date(from: $0.modifiedTime ?? "") ?? .now,
+                modified: ISO8601DateFormatter.shared.date(from: $0.modifiedTime ?? "") ?? .now,
                 mimeType: $0.mimeType,
                 etag: $0.md5Checksum
             )
@@ -687,7 +687,7 @@ final class RemoteDropboxService: OAuthBackedCloudService {
                 path: $0.pathLower ?? "",
                 isDirectory: $0.tag == "folder",
                 sizeBytes: $0.size ?? 0,
-                modified: ISO8601DateFormatter().date(from: $0.serverModified ?? $0.clientModified ?? "") ?? .now,
+                modified: ISO8601DateFormatter.shared.date(from: $0.serverModified ?? $0.clientModified ?? "") ?? .now,
                 mimeType: nil,
                 etag: $0.contentHash
             )
@@ -767,7 +767,7 @@ final class RemoteOneDriveService: OAuthBackedCloudService {
                 path: $0.id,
                 isDirectory: $0.folder != nil,
                 sizeBytes: $0.size ?? 0,
-                modified: ISO8601DateFormatter().date(from: $0.lastModifiedDateTime ?? "") ?? .now,
+                modified: ISO8601DateFormatter.shared.date(from: $0.lastModifiedDateTime ?? "") ?? .now,
                 mimeType: nil,
                 etag: nil
             )
@@ -840,7 +840,7 @@ final class RemoteBoxService: OAuthBackedCloudService {
                 path: $0.id,
                 isDirectory: $0.type == "folder",
                 sizeBytes: $0.size ?? 0,
-                modified: ISO8601DateFormatter().date(from: $0.modifiedAt ?? "") ?? .now,
+                modified: ISO8601DateFormatter.shared.date(from: $0.modifiedAt ?? "") ?? .now,
                 mimeType: nil,
                 etag: $0.etag
             )
@@ -1114,7 +1114,7 @@ private final class S3ListBucketXMLParser: NSObject, XMLParserDelegate {
             case "Size":
                 currentSize = Int64(value) ?? 0
             case "LastModified":
-                currentModified = ISO8601DateFormatter().date(from: value) ?? .now
+                currentModified = ISO8601DateFormatter.shared.date(from: value) ?? .now
             case "ETag":
                 currentETag = value.replacingOccurrences(of: "\"", with: "")
             case "Contents":
@@ -1155,21 +1155,37 @@ private final class S3ListBucketXMLParser: NSObject, XMLParserDelegate {
 }
 
 private extension Date {
-    var awsTimestamp: String {
+    static let awsTimestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
-        return formatter.string(from: self)
-    }
+        return formatter
+    }()
 
-    var awsDateStamp: String {
+    static let awsDateStampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd"
-        return formatter.string(from: self)
+        return formatter
+    }()
+
+    var awsTimestamp: String {
+        Date.awsTimestampFormatter.string(from: self)
     }
+
+    var awsDateStamp: String {
+        Date.awsDateStampFormatter.string(from: self)
+    }
+}
+
+private extension ISO8601DateFormatter {
+    static let shared: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 }
 
 private extension Digest {
