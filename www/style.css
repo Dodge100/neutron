@@ -4,30 +4,21 @@
 
 :root {
   --bg: #09090b;
-  --bg-elev: #0c0c0e;
   --bg-card: #111113;
   --fg: #fafafa;
   --fg-bright: #ffffff;
   --fg-muted: #a1a1aa;
-  --fg-dim: #71717a;
   --fg-faint: #52525b;
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.14);
   --accent: #b91c1c;
   --accent-dim: rgba(185, 28, 28, 0.1);
-  --ok: oklch(0.72 0.16 150);
-  --warn: oklch(0.76 0.15 75);
-  --red: #ef4444;
-  --yellow: #eab308;
-  --green: #22c55e;
   --dot-color: rgba(255, 255, 255, 0.15);
   --noise-opacity: 0.035;
   --font-sans: "DM Sans", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-serif: "Instrument Serif", Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   --radius: 12px;
-  --radius-sm: 8px;
-  --radius-lg: 16px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -59,7 +50,7 @@ body::after {
 
 a { color: inherit; text-decoration: none; }
 
-::selection, *::selection {
+*::selection {
   background: var(--accent);
   color: var(--bg);
 }
@@ -69,6 +60,7 @@ img, svg { display: block; max-width: 100%; }
 
 /* --- Page layout --- */
 .page {
+  position: relative;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -101,7 +93,6 @@ img, svg { display: block; max-width: 100%; }
 .serif-accent {
   font-family: var(--font-serif);
   font-style: italic;
-  font-weight: 400;
 }
 
 /* --- Buttons --- */
@@ -169,7 +160,9 @@ section {
   max-width: 720px;
 }
 
-.section-head h2 {
+.section-head h2,
+.custom-main h2,
+.panes-text h2 {
   font-size: clamp(32px, 4vw, 48px);
   font-weight: 500;
   letter-spacing: -0.035em;
@@ -191,26 +184,19 @@ section {
   padding: 72px 0 60px;
   position: relative;
   border-top: 0;
+  text-align: center;
 }
 
-.page-dots {
+.page::before {
+  content: "";
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
   pointer-events: none;
   z-index: 0;
   background-image: radial-gradient(circle, var(--dot-color) 1.5px, transparent 1.5px);
   background-size: 48px 48px;
-  mask-image: radial-gradient(ellipse 80% 165% at 50% 5%, black 15%, transparent 100%);
-  -webkit-mask-image: radial-gradient(ellipse 80% 165% at 50% 5%, black 15%, transparent 100%);
-}
-
-
-.hero-inner {
-  position: relative;
-  text-align: center;
+  mask-image: linear-gradient(black 50vh, transparent 100vh);
+  -webkit-mask-image: linear-gradient(black 50vh, transparent 100vh);
 }
 
 .hero-title {
@@ -341,7 +327,6 @@ section {
 }
 
 .screenshot-frame img {
-  display: block;
   width: 100%;
   height: auto;
 }
@@ -354,14 +339,6 @@ section {
   grid-template-columns: 1fr 1fr;
   gap: 48px;
   align-items: start;
-}
-
-.custom-main h2 {
-  font-size: clamp(32px, 4vw, 48px);
-  font-weight: 500;
-  letter-spacing: -0.035em;
-  line-height: 1.08;
-  margin-bottom: 18px;
 }
 
 .custom-main p {
@@ -420,20 +397,14 @@ section {
   position: relative;
 }
 
-.placeholder-img {
+.panes-visual::before {
+  content: "";
+  display: block;
   width: 100%;
   aspect-ratio: 4 / 3;
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius);
   background: var(--bg-card);
-}
-
-.panes-text h2 {
-  font-size: clamp(32px, 4vw, 48px);
-  font-weight: 500;
-  letter-spacing: -0.035em;
-  line-height: 1.08;
-  margin-bottom: 18px;
 }
 
 .panes-text p {
@@ -452,7 +423,6 @@ section {
    CLOUD + DOWNLOADS
    ============================================ */
 
-
 .cloud-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -465,10 +435,6 @@ section {
   flex-direction: column;
   gap: 8px;
   transition: border-color 0.3s ease;
-}
-
-.cloud-card:hover {
-  border-color: var(--border-strong);
 }
 
 .cloud-card-icon {
@@ -510,8 +476,6 @@ section {
   pointer-events: none;
 }
 
-.cta-inner { position: relative; }
-
 .cta-title {
   font-size: clamp(40px, 6vw, 72px);
   margin-bottom: 8px;
@@ -548,11 +512,8 @@ section {
 }
 
 @media (max-width: 480px) {
-  .hero-actions { flex-direction: column; }
   .btn { width: 100%; justify-content: center; }
 }
-
-
 
 @media (max-width: 640px) {
   .cloud-grid { grid-template-columns: 1fr; }
