@@ -44,6 +44,9 @@ struct ContentView: View {
 
     // Command Palette
     @State private var showCommandPalette: Bool = false
+    
+    // Transfer Center
+    @State private var showTransferCenter: Bool = false
 
     private var canGoBack: Bool { historyIndex > 0 }
     private var canGoForward: Bool { historyIndex < navigationHistory.count - 1 }
@@ -263,24 +266,16 @@ struct ContentView: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .goHome)) { _ in
-                let home = FileManager.default.homeDirectoryForCurrentUser
-                selectedSidebarPath = home
-                activePanePath = home
+                navigateTo(FileManager.default.homeDirectoryForCurrentUser)
             }
             .onReceive(NotificationCenter.default.publisher(for: .goDesktop)) { _ in
-                let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
-                selectedSidebarPath = desktop
-                activePanePath = desktop
+                navigateTo(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop"))
             }
             .onReceive(NotificationCenter.default.publisher(for: .goDownloads)) { _ in
-                let downloads = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
-                selectedSidebarPath = downloads
-                activePanePath = downloads
+                navigateTo(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads"))
             }
             .onReceive(NotificationCenter.default.publisher(for: .goDocuments)) { _ in
-                let documents = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
-                selectedSidebarPath = documents
-                activePanePath = documents
+                navigateTo(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents"))
             }
     }
 
@@ -309,6 +304,18 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .showCommandPalette)) { _ in
                 showCommandPalette.toggle()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .showDownloadsPanel)) { _ in
+                showTransferCenter.toggle()
+            }
+            .sheet(isPresented: $showTransferCenter) {
+                TransferCenterView()
+                    .frame(minWidth: 900, minHeight: 600)
+            }
+    }
+
+    private func navigateTo(_ url: URL) {
+        selectedSidebarPath = url
+        activePanePath = url
     }
 
     // MARK: - Navigation History

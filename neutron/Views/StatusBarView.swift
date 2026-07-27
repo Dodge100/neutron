@@ -3,21 +3,34 @@ import SwiftUI
 struct StatusBarView: View {
     let totalCount: Int
     let selectedCount: Int
-    let selectedSize: Int64
 
     var body: some View {
-        Text(statusText)
-            .font(.system(size: 11))
-            .foregroundColor(.secondary)
-    }
+        HStack(spacing: 6) {
+            if selectedCount > 0 {
+                Text("\(selectedCount)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.primary)
 
-    private var statusText: String {
-        if selectedCount > 0 {
-            let formatter = ByteCountFormatter()
-            formatter.countStyle = .file
-            let sizeStr = formatter.string(fromByteCount: selectedSize)
-            return "\(selectedCount) of \(totalCount) selected, \(sizeStr)"
+                Text("/ \(totalCount)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("\(totalCount) \(totalCount == 1 ? "item" : "items")")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
         }
-        return "\(totalCount) items"
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
+}
+
+// MARK: - Preview
+
+#Preview {
+    VStack(spacing: 20) {
+        StatusBarView(totalCount: 128, selectedCount: 0)
+        StatusBarView(totalCount: 128, selectedCount: 5)
+    }
+    .frame(width: 300)
 }

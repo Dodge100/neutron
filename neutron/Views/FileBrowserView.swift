@@ -5,12 +5,6 @@ import Quartz
 import QuickLookThumbnailing
 import UniformTypeIdentifiers
 
-private extension Color {
-    static var neutronSelectionAccent: Color {
-        Color(nsColor: .controlAccentColor)
-    }
-}
-
 private enum FileMoveNotificationUserInfoKey {
     static let affectedDirectories = "affectedDirectories"
 }
@@ -70,9 +64,12 @@ struct FileBrowserView: View {
     @State private var commandNonce = UUID()
     @State private var lastClickedURL: URL?
     @State private var lastClickTimestamp: TimeInterval = 0
-    @State private var previewRequestID = UUID()
     @State private var showOpenPathPrompt = false
     @State private var openPathPromptText = ""
+
+    // Preview coalescing
+    @State private var previewSelectionTask: Task<Void, Never>?
+    @State private var lastSelectedURL: URL?
 
     enum SortColumn {
         case name, size, modified, kind
@@ -124,41 +121,32 @@ struct FileBrowserView: View {
 
                 HStack(spacing: 0) {
                     if showsPathBar {
-                        HStack(spacing: 6) {
-                            PathBarView(currentPath: $currentPath)
+                        PathBarView(currentPath: $currentPath)
 
-                            Button {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(currentPath.path, forType: .string)
-                                showCopiedPath = true
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
-                                    showCopiedPath = false
-                                }
-                            } label: {
+                        // Copy path button — copies selected file(s) or current directory
+                        Button {
+                            copyPathToClipboard()
+                        } label: {
+                            HStack(spacing: 3) {
                                 Image(systemName: showCopiedPath ? "checkmark" : "doc.on.doc")
-                                    .font(.system(size: 11, weight: .semibold))
+                                    .font(.system(size: 9, weight: .medium))
                                     .foregroundStyle(showCopiedPath ? .green : .secondary)
                             }
-                            .buttonStyle(.plain)
-                            .help("Copy Path")
-                            .padding(.trailing, 6)
+                            .frame(width: 18, height: 18)
                         }
+                        .buttonStyle(.plain)
+                        .help(selectedFiles.isEmpty ? "Copy Directory Path" : "Copy File Path")
                     }
 
-                    if showsPathBar && showsStatusBar {
-                        Spacer()
-                    }
+                    Spacer()
 
                     if showsStatusBar {
                         StatusBarView(
                             totalCount: filteredFiles.count,
-                            selectedCount: selectedFiles.count,
-                            selectedSize: selectedSize
+                            selectedCount: selectedFiles.count
                         )
-                        .padding(.trailing, 4)
                     }
                 }
-                .frame(height: 20)
                 .background(Color(nsColor: .controlBackgroundColor))
             }
         }
@@ -344,25 +332,33 @@ struct FileBrowserView: View {
     }
 
     private func publishPreviewSelection() {
-        guard let firstSelectedURL = selectedFiles.first,
-              let selectedFile = files.first(where: { $0.path == firstSelectedURL }) else {
-            previewRequestID = UUID()
+        guard let firstSelectedURL = selectedFiles.first else {
+            previewSelectionTask?.cancel()
+            previewSelectionTask = nil
+            lastSelectedURL = nil
             onPreviewSelectionChange?(nil)
             return
         }
-
-        let requestID = UUID()
-        previewRequestID = requestID
+        if firstSelectedURL == lastSelectedURL { return }
+        lastSelectedURL = firstSelectedURL
+        previewSelectionTask?.cancel()
+        guard let selectedFile = files.first(where: { $0.path == firstSelectedURL })
+            ?? files.first(where: { $0.path.standardizedFileURL == firstSelectedURL.standardizedFileURL })
+            ?? FileItem.fromURL(firstSelectedURL) else {
+            onPreviewSelectionChange?(nil)
+            return
+        }
         onPreviewSelectionChange?(FilePreviewItem(file: selectedFile, info: nil))
-
-        DispatchQueue.global(qos: .userInitiated).async {
+        previewSelectionTask = Task { [weak fileOps] in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled, let fileOps else { return }
             let info = fileOps.getFileInfo(url: selectedFile.path)
-            let item = FilePreviewItem(file: selectedFile, info: info)
-
-            DispatchQueue.main.async {
-                guard self.previewRequestID == requestID,
+            guard !Task.isCancelled else { return }
+            let enrichedItem = FilePreviewItem(file: selectedFile, info: info)
+            await MainActor.run {
+                guard !Task.isCancelled,
                       self.selectedFiles == Set([selectedFile.path]) else { return }
-                self.onPreviewSelectionChange?(item)
+                self.onPreviewSelectionChange?(enrichedItem)
             }
         }
     }
@@ -489,6 +485,33 @@ struct FileBrowserView: View {
             Button("Paste") {
                 fileOps.pasteFiles(to: currentPath)
                 loadFiles()
+            }
+        }
+        Divider()
+        Button("Copy Path") {
+            let pathString = targetURLs.map { $0.path }.joined(separator: "\n")
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(pathString, forType: .string)
+        }
+        .keyboardShortcut("C", modifiers: [.command, .option])
+        Button("Copy Path as Finder URL") {
+            let urlString = targetURLs.map { $0.absoluteString }.joined(separator: "\n")
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(urlString, forType: .string)
+        }
+        Button("Open in Terminal") {
+            let cdPath = targetURLs.count == 1 && targetURLs[0].isFileURL
+                ? targetURLs[0].deletingLastPathComponent().path
+                : currentPath.path
+            let script = """
+            tell application "Terminal"
+                activate
+                do script "cd '\(cdPath)'"
+            end tell
+            """
+            if let appleScript = NSAppleScript(source: script) {
+                var error: NSDictionary?
+                appleScript.executeAndReturnError(&error)
             }
         }
         Divider()
@@ -658,7 +681,7 @@ struct FileBrowserView: View {
                     currentDirectoryFiles: filteredFiles,
                     gitStatuses: gitStatuses,
                     contextMenuForFile: { file in
-                        contextMenuForFile(file)
+                        AnyView(contextMenuForFile(file))
                     }
                 )
             case .tree:
@@ -674,6 +697,23 @@ struct FileBrowserView: View {
                     }
                 )
             }
+        }
+    }
+
+    // MARK: - Clipboard
+
+    private func copyPathToClipboard() {
+        let paths: [String]
+        if selectedFiles.isEmpty {
+            paths = [currentPath.path]
+        } else {
+            paths = selectedFiles.map { $0.path }.sorted()
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
+        showCopiedPath = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+            showCopiedPath = false
         }
     }
 

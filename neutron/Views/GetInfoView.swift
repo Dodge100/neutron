@@ -19,11 +19,7 @@ struct GetInfoView: View {
             Divider()
 
             InfoRow(label: "Kind", value: info.kind)
-            InfoRow(label: "Size", value: {
-                let f = ByteCountFormatter()
-                f.countStyle = .file
-                return f.string(fromByteCount: info.size)
-            }())
+            InfoRow(label: "Size", value: FileItem.formatSize(info.size))
             InfoRow(label: "Location", value: info.path)
             InfoRow(label: "Created", value: info.created.formatted())
             InfoRow(label: "Modified", value: info.modified.formatted())

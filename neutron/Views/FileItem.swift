@@ -32,7 +32,11 @@ struct FileItem: Identifiable, Hashable {
 
     var formattedSize: String {
         if isDirectory { return "--" }
-        return Self.sizeFormatter.string(fromByteCount: size)
+        return Self.formatSize(size)
+    }
+
+    static func formatSize(_ bytes: Int64) -> String {
+        sizeFormatter.string(fromByteCount: bytes)
     }
 
     var formattedDate: String {
@@ -116,14 +120,7 @@ struct FilePreviewItem: Identifiable, Equatable {
         self.isDirectory = file.isDirectory
         self.path = file.path
         self.kind = info?.kind ?? file.kindString
-        self.size = {
-            if let info {
-                let formatter = ByteCountFormatter()
-                formatter.countStyle = .file
-                return formatter.string(fromByteCount: info.size)
-            }
-            return file.formattedSize
-        }()
+        self.size = info.map { FileItem.formatSize($0.size) } ?? file.formattedSize
         self.location = info?.path ?? file.path.path
         self.created = info?.created.formatted()
         self.modified = info?.modified.formatted() ?? file.formattedDate
@@ -148,13 +145,6 @@ struct FilePreviewItem: Identifiable, Equatable {
         self.isHidden = info?.isHidden ?? file.name.hasPrefix(".")
         self.isSymbolicLink = info?.isSymbolicLink ?? false
         self.tags = file.tags
-        self.sizeOnDisk = {
-            if let bytes = info?.sizeOnDisk, bytes > 0 {
-                let formatter = ByteCountFormatter()
-                formatter.countStyle = .file
-                return formatter.string(fromByteCount: bytes)
-            }
-            return nil
-        }()
+        self.sizeOnDisk = info?.sizeOnDisk.map { FileItem.formatSize($0) }
     }
 }

@@ -56,6 +56,86 @@ struct TabDragPayload: Codable, Hashable {
     }
 }
 
+// MARK: - Tab Drop Lifecycle
+
+enum TabDropLifecycle {
+    case idle
+    case hovering
+}
+
+// MARK: - Tab Drop Delegate (DropDelegate for fine-grained control)
+
+struct TabDropDelegate: DropDelegate {
+    let targetIndex: Int
+    let sourcePaneID: UUID
+    let targetPaneID: UUID
+    @Binding var dropTargetIndex: Int?
+    @Binding var dropLifecycle: TabDropLifecycle
+    var onPerformDrop: (TabDragPayload, Int?) -> Bool
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let provider = info.itemProviders(for: [.data]).first else { return false }
+
+        let result = Thread.isMainThread
+            ? loadTransferData(from: provider)
+            : DispatchQueue.main.sync { loadTransferData(from: provider) }
+
+        guard let payload = result else { return false }
+        let handled = onPerformDrop(payload, targetIndex)
+
+        dropLifecycle = .idle
+        dropTargetIndex = nil
+        return handled
+    }
+
+    func dropEntered(info: DropInfo) {
+        dropLifecycle = .hovering
+        if shouldSuppressIndicator() {
+            dropTargetIndex = nil
+        } else {
+            dropTargetIndex = targetIndex
+        }
+    }
+
+    func dropExited(info: DropInfo) {
+        dropLifecycle = .idle
+        if dropTargetIndex == targetIndex {
+            dropTargetIndex = nil
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard dropLifecycle == .hovering else { return DropProposal(operation: .move) }
+        if shouldSuppressIndicator() {
+            if dropTargetIndex == targetIndex { dropTargetIndex = nil }
+        } else if dropTargetIndex != targetIndex {
+            dropTargetIndex = targetIndex
+        }
+        return DropProposal(operation: .move)
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.itemProviders(for: [.data]).first != nil
+    }
+
+    private func shouldSuppressIndicator() -> Bool {
+        guard sourcePaneID == targetPaneID else { return false }
+        return targetIndex == 0
+    }
+
+    private func loadTransferData(from provider: NSItemProvider) -> TabDragPayload? {
+        let semaphore = DispatchSemaphore(value: 0)
+        var result: TabDragPayload?
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.data.identifier) { data, _ in
+            defer { semaphore.signal() }
+            guard let data else { return }
+            result = try? JSONDecoder().decode(TabDragPayload.self, from: data)
+        }
+        _ = semaphore.wait(timeout: .now() + 2)
+        return result
+    }
+}
+
 struct PaneState: Identifiable, Equatable {
     let id: UUID
     var tabs: [FileTab]
@@ -381,12 +461,14 @@ struct DualPaneView: View {
                 if canShowPreview {
                     Divider()
                     FinderPreviewColumn(
-                        file: paneStates[focusedPaneID ?? UUID()]?.previewItem,
+                        file: sharedPreviewItem,
                         onRename: handlePreviewRename,
                         onTagsChanged: handlePreviewTagsChanged,
-                        onRefresh: handlePreviewRefresh
+                        onRefresh: handlePreviewRefresh,
+                        onPermissionsChanged: handlePreviewPermissionsChanged
                     )
                     .environmentObject(fileOps)
+                    .id(sharedPreviewItem?.path.path ?? "no-selection")
                     .frame(width: effectivePreviewWidth)
                     .onAppear {
                         previewColumnWidth = Double(effectivePreviewWidth)
@@ -509,10 +591,14 @@ struct DualPaneView: View {
     private func handleViewModeChange(for paneID: UUID, to newMode: FileBrowserView.ViewMode) {
         if syncPaneViewModes {
             for id in paneStates.keys {
-                paneStates[id]?.viewMode = newMode
+                if var pane = paneStates[id] {
+                    pane.viewMode = newMode
+                    paneStates[id] = pane
+                }
             }
-        } else {
-            paneStates[paneID]?.viewMode = newMode
+        } else if var pane = paneStates[paneID] {
+            pane.viewMode = newMode
+            paneStates[paneID] = pane
         }
 
         if focusedPaneID == paneID || syncPaneViewModes {
@@ -521,8 +607,9 @@ struct DualPaneView: View {
     }
 
     private func navigatePane(_ paneID: UUID, to path: URL) {
-        guard paneStates[paneID] != nil else { return }
-        paneStates[paneID]?.navigate(to: path)
+        guard var pane = paneStates[paneID] else { return }
+        pane.navigate(to: path)
+        paneStates[paneID] = pane
         if focusedPaneID == paneID {
             activePanePath = path
         }
@@ -539,9 +626,10 @@ struct DualPaneView: View {
     }
 
     private func handleNewTab() {
-        guard let focusedPaneID else { return }
-        paneStates[focusedPaneID]?.addTab(path: paneStates[focusedPaneID]?.currentPath ?? activePanePath)
-        paneStates[focusedPaneID]?.previewItem = nil
+        guard let focusedPaneID, var pane = paneStates[focusedPaneID] else { return }
+        pane.addTab(path: pane.currentPath)
+        pane.previewItem = nil
+        paneStates[focusedPaneID] = pane
         syncFocusedPaneState()
     }
 
@@ -592,18 +680,23 @@ private func handleCloseTab() {
               let newMode = mode(for: modeValue) else { return }
 
         if syncPaneViewModes {
-            for paneID in paneStates.keys {
-                paneStates[paneID]?.viewMode = newMode
+            for id in paneStates.keys {
+                if var pane = paneStates[id] {
+                    pane.viewMode = newMode
+                    paneStates[id] = pane
+                }
             }
-        } else {
-            paneStates[focusedPaneID]?.viewMode = newMode
+        } else if var pane = paneStates[focusedPaneID] {
+            pane.viewMode = newMode
+            paneStates[focusedPaneID] = pane
         }
         viewMode = newMode
     }
 
     private func handlePreviewSelectionChange(for paneID: UUID, item: FilePreviewItem?) {
-        guard paneStates[paneID] != nil else { return }
-        paneStates[paneID]?.previewItem = item
+        guard var pane = paneStates[paneID] else { return }
+        pane.previewItem = item
+        paneStates[paneID] = pane
         if focusedPaneID == paneID {
             sharedPreviewItem = item
         }
@@ -612,11 +705,12 @@ private func handleCloseTab() {
     private func handlePreviewRename(_ url: URL, _ newName: String) {
         if let newURL = fileOps.renameFile(at: url, to: newName) {
             // Update preview item with new name
-            if let paneID = focusedPaneID, var preview = paneStates[paneID]?.previewItem {
+            if let paneID = focusedPaneID, var pane = paneStates[paneID] {
                 let info = fileOps.getFileInfo(url: newURL)
                 let fileItem = FileItem.fromURL(newURL)
                 if let fileItem {
-                    paneStates[paneID]?.previewItem = FilePreviewItem(file: fileItem, info: info)
+                    pane.previewItem = FilePreviewItem(file: fileItem, info: info)
+                    paneStates[paneID] = pane
                 }
             }
             NotificationCenter.default.post(name: .refreshFiles, object: nil)
@@ -630,14 +724,41 @@ private func handleCloseTab() {
         try? mutableURL.setResourceValues(resourceValues)
 
         // Update preview item with new tags
-        if let paneID = focusedPaneID, var preview = paneStates[paneID]?.previewItem {
+        if let paneID = focusedPaneID, var pane = paneStates[paneID] {
             let info = fileOps.getFileInfo(url: url)
             let fileItem = FileItem.fromURL(url)
             if let fileItem {
-                paneStates[paneID]?.previewItem = FilePreviewItem(file: fileItem, info: info)
+                pane.previewItem = FilePreviewItem(file: fileItem, info: info)
+                paneStates[paneID] = pane
             }
         }
         NotificationCenter.default.post(name: .refreshFiles, object: nil)
+    }
+
+    private func handlePreviewPermissionsChanged(_ url: URL, _ mode: UInt16) {
+        do {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: mode)],
+                ofItemAtPath: url.path
+            )
+            // Refresh the preview item to reflect changes
+            if let paneID = focusedPaneID, var pane = paneStates[paneID] {
+                let info = fileOps.getFileInfo(url: url)
+                let fileItem = FileItem.fromURL(url)
+                if let fileItem {
+                    pane.previewItem = FilePreviewItem(file: fileItem, info: info)
+                    paneStates[paneID] = pane
+                }
+            }
+            NotificationCenter.default.post(name: .refreshFiles, object: nil)
+        } catch {
+            NSSound.beep()
+            // The preview pane's PermissionGridView will show an alert
+            // for the direct-fallback case; here we just surface via notification
+            DispatchQueue.main.async {
+                NSApp.presentError(error)
+            }
+        }
     }
 
     private func handlePreviewRefresh() {
@@ -733,10 +854,17 @@ private func handleCloseTab() {
     private func syncFocusedPaneState() {
         guard let focusedPaneID,
               let pane = paneStates[focusedPaneID] else { return }
-        activePanePath = pane.currentPath
-        selectedSidebarPath = pane.currentPath
-        viewMode = pane.viewMode
-        sharedPreviewItem = pane.previewItem
+        // Only update bindings when values actually changed to avoid cascading re-renders
+        if pane.currentPath != activePanePath {
+            activePanePath = pane.currentPath
+            selectedSidebarPath = pane.currentPath
+        }
+        if pane.viewMode != viewMode {
+            viewMode = pane.viewMode
+        }
+        if pane.previewItem?.id != sharedPreviewItem?.id || pane.previewItem?.size != sharedPreviewItem?.size {
+            sharedPreviewItem = pane.previewItem
+        }
     }
 
     private func postFocusedPaneCommand(_ name: Notification.Name) {
@@ -1133,7 +1261,7 @@ struct PaneDividerView: View {
 
     var body: some View {
         Rectangle()
-            .fill(isHovering ? Color(nsColor: .controlAccentColor).opacity(0.5) : Color(nsColor: .separatorColor))
+            .fill(isHovering ? Color.accentColor.opacity(0.5) : Color(nsColor: .separatorColor))
             .frame(
                 width: axis == .horizontal ? (isHovering ? 4 : 1) : nil,
                 height: axis == .vertical ? (isHovering ? 4 : 1) : nil
@@ -1421,7 +1549,7 @@ struct WorkspacePaneContainerView: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 4)
-                .stroke(showFocusRing && isFocused ? Color(nsColor: .controlAccentColor).opacity(0.5) : Color.clear, lineWidth: 1)
+                .stroke(showFocusRing && isFocused ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let selectedTab, selectedTab.path.isFileURL else { return false }
@@ -1646,6 +1774,8 @@ struct WorkspacePaneContainerView: View {
     }
 }
 
+// MARK: - Tab Bar (SwiftUI)
+
 private struct PaneTabStripView: View {
     let paneID: UUID
     let tabs: [FileTab]
@@ -1657,70 +1787,200 @@ private struct PaneTabStripView: View {
     var onDropFiles: ([URL], FileTab) -> Bool
 
     @State private var dropIndex: Int?
+    @State private var dropLifecycle: TabDropLifecycle = .idle
 
     var body: some View {
-        HStack(spacing: 4) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
+        // Only show tab strip when there are multiple tabs
+        if tabs.count > 1 {
+            HStack(spacing: 0) {
+                HStack(spacing: 0) {
                     ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
-                        let payload = TabDragPayload(
-                            tabID: tab.id,
-                            sourcePaneID: paneID,
-                            title: tab.title,
-                            path: tab.path.path
-                        )
-
-                        PaneTabStripItem(
-                            title: tab.title,
-                            isSelected: tab.id == selectedTabID,
-                            isDropTargeted: dropIndex == index,
-                            onSelect: {
+                    PaneTabCell(
+                        title: tab.title,
+                        tabNumber: index + 1,
+                        isActive: tab.id == selectedTabID,
+                        isDropTargeted: dropIndex == index,
+                        canClose: tabs.count > 1,
+                        onSelect: {
+                            withTransaction(Transaction(animation: nil)) {
                                 onSelect(tab)
-                            },
-                            onClose: {
-                                onClose(tab)
-                            },
-                            onDropFiles: { urls in
-                                onDropFiles(urls, tab)
                             }
-                        )
-                        .draggable(payload.encoded() ?? "") {
-                            TabDragPreview(title: tab.title)
+                        },
+                        onClose: {
+                            withTransaction(Transaction(animation: nil)) {
+                                onClose(tab)
+                            }
                         }
-                        .dropDestination(for: String.self) { items, _ in
-                            guard let raw = items.first,
-                                  let decoded = TabDragPayload.decode(raw) else { return false }
-                            return onDropTab(decoded, index)
-                        } isTargeted: { targeting in
-                            dropIndex = targeting ? index : nil
+                    )
+                    .frame(maxWidth: .infinity)
+                    .onDrop(of: [.data], delegate: TabDropDelegate(
+                        targetIndex: index,
+                        sourcePaneID: paneID,
+                        targetPaneID: paneID,
+                        dropTargetIndex: $dropIndex,
+                        dropLifecycle: $dropLifecycle,
+                        onPerformDrop: onDropTab
+                    ))
+                    .contextMenu {
+                        Button("New Tab") { onNewTab() }
+                        Button("Duplicate Tab") {
+                            let path = tab.path
+                            onNewTab()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                NotificationCenter.default.post(
+                                    name: Notification.Name("navigatePaneToPath"),
+                                    object: path
+                                )
+                            }
                         }
-                    }
-                }
-                .padding(.horizontal, 6)
-                .dropDestination(for: String.self) { items, _ in
-                    guard let raw = items.first,
-                          let decoded = TabDragPayload.decode(raw) else { return false }
-                    return onDropTab(decoded, nil)
-                } isTargeted: { targeting in
-                    if !targeting {
-                        dropIndex = nil
+                        Divider()
+                        Button("Close Tab") { onClose(tab) }
+                            .keyboardShortcut("w", modifiers: .command)
+                        Button("Close Other Tabs") {
+                            for other in tabs where other.id != tab.id {
+                                onClose(other)
+                            }
+                        }
+                        .disabled(tabs.count <= 1)
+                        Button("Close Tabs to the Right") {
+                            if let idx = tabs.firstIndex(where: { $0.id == tab.id }) {
+                                for other in tabs.suffix(from: idx + 1) {
+                                    onClose(other)
+                                }
+                            }
+                        }
                     }
                 }
             }
 
+            // + button at the end
             Button(action: onNewTab) {
                 Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(.trailing, 8)
-            .help("New Tab")
+            .help("New Tab (⌘T)")
         }
-        .frame(maxWidth: .infinity)
         .frame(height: 28)
         .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .bottom) { Divider() }
+        } else {
+            // Single tab: no visible tab strip
+            EmptyView()
+        }
     }
 }
+
+// MARK: - Tab Cell
+
+private struct PaneTabCell: View {
+    let title: String
+    let tabNumber: Int
+    let isActive: Bool
+    var isDropTargeted: Bool = false
+    let canClose: Bool
+    var onSelect: () -> Void
+    var onClose: () -> Void
+
+    @State private var isHovered = false
+    @State private var isCloseHovered = false
+    @State private var isFileDropTargeted = false
+
+    private var shortcutLabel: String {
+        tabNumber <= 9 ? "\u{2318}\(tabNumber)" : ""
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Centered title
+            Text(title)
+                .font(.system(size: 11, weight: isActive ? .medium : .regular))
+                .foregroundStyle(isActive ? .primary : .secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity)
+
+            // Right edge: Cmd# or close button
+            HStack(spacing: 2) {
+                if isHovered && canClose {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(isCloseHovered ? .primary : .secondary)
+                            .frame(width: 14, height: 14)
+                            .background(
+                                isCloseHovered ? Color.gray.opacity(0.25) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 2)
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { isCloseHovered = $0 }
+                } else if !shortcutLabel.isEmpty {
+                    Text(shortcutLabel)
+                        .font(.system(size: 9, weight: .regular))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(width: 20)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(
+            isActive
+                ? Color(nsColor: .controlBackgroundColor)
+                : (isHovered ? Color(nsColor: .controlBackgroundColor).opacity(0.5) : Color.clear)
+        )
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Color.gray.opacity(0.25))
+                .frame(width: 1)
+                .opacity(isActive ? 0 : 1)
+        }
+        .overlay(alignment: .bottom) {
+            if isActive {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(height: 2)
+            }
+        }
+        .overlay(alignment: .leading) {
+            if isDropTargeted && !isFileDropTargeted {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Color.accentColor)
+                    .frame(width: 2.5, height: 16)
+                    .padding(.leading, -1)
+            }
+        }
+        .overlay {
+            if isFileDropTargeted {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color.accentColor, lineWidth: 1)
+                    }
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .onTapGesture(perform: onSelect)
+        .onMiddleClick { onClose() }
+        .dropDestination(for: URL.self) { urls, _ in
+            false
+        } isTargeted: { targeting in
+            withAnimation(.easeInOut(duration: 0.12)) {
+                isFileDropTargeted = targeting
+            }
+        }
+    }
+}
+
+// MARK: - Tab Drag Preview
+// MARK: - Tab Drag Preview
 
 private struct TabDragPreview: View {
     let title: String
@@ -1734,81 +1994,63 @@ private struct TabDragPreview: View {
                 .lineLimit(1)
                 .frame(maxWidth: 180, alignment: .leading)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 3)
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color(nsColor: .controlAccentColor).opacity(0.7), lineWidth: 1)
+                .stroke(Color.accentColor.opacity(0.5), lineWidth: 0.8)
+        }
+        .opacity(0.92)
+    }
+}
+
+// MARK: - Middle Click Modifier
+
+private struct MiddleClickModifier: ViewModifier {
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                MiddleClickObserverView(action: action)
+                    .allowsHitTesting(false)
+            )
+    }
+}
+
+private struct MiddleClickObserverView: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        let clickGesture = NSClickGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleClick(_:)))
+        clickGesture.buttonMask = 0x2 // middle mouse button
+        view.addGestureRecognizer(clickGesture)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    final class Coordinator: NSObject {
+        let action: () -> Void
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+        }
+
+        @objc func handleClick(_ gesture: NSClickGestureRecognizer) {
+            action()
         }
     }
 }
 
-private struct PaneTabStripItem: View {
-    let title: String
-    let isSelected: Bool
-    var isDropTargeted: Bool = false
-    var onSelect: () -> Void
-    var onClose: () -> Void
-    var onDropFiles: ([URL]) -> Bool = { _ in false }
-
-    @State private var isFileDropTargeted = false
-
-    private var tabFill: Color {
-        if isSelected {
-            return Color(nsColor: .controlBackgroundColor)
-        }
-        return Color(nsColor: .windowBackgroundColor)
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: 160)
-
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(tabFill)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(isSelected ? Color(nsColor: .separatorColor) : Color.clear, lineWidth: 0.7)
-        }
-        .overlay {
-            if isDropTargeted {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Color(nsColor: .controlAccentColor), style: StrokeStyle(lineWidth: 1.4, dash: [4, 3]))
-            }
-        }
-        .overlay {
-            if isFileDropTargeted {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color(nsColor: .controlAccentColor).opacity(0.14))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .stroke(Color(nsColor: .controlAccentColor), lineWidth: 1.2)
-                    }
-            }
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .onTapGesture(perform: onSelect)
-        .dropDestination(for: URL.self) { urls, _ in
-            onDropFiles(urls)
-        } isTargeted: { targeting in
-            isFileDropTargeted = targeting
-        }
+extension View {
+    func onMiddleClick(perform action: @escaping () -> Void) -> some View {
+        modifier(MiddleClickModifier(action: action))
     }
 }
 
